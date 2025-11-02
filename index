@@ -3,340 +3,399 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>TimeRunner — Sprite Build</title>
+<title>ChronoRun — Scorpion & Cyclops (HP + Weapons)</title>
 <style>
   :root{--bg:#0b1420;--panel:#081827cc;--accent:#7dd3fc}
   html,body{height:100%;margin:0;background:var(--bg);font-family:system-ui,Segoe UI,Roboto,Arial;color:#e6eef6}
-  #wrap{position:relative;height:100vh;overflow:hidden}
+  #gameWrap{position:relative;height:100vh;overflow:hidden}
   canvas{display:block;width:100%;height:100%}
-  #ui{
-    position:absolute;left:12px;top:12px;background:var(--panel);padding:8px;border-radius:8px;font-weight:700;z-index:10;
+  #hud{
+    position:fixed; right:12px; top:12px;
+    background:rgba(0,0,0,0.6); padding:10px 12px; border-radius:10px; font-family:monospace;
+    color:#eaf6ff; font-size:14px; line-height:1.4; min-width:220px;
   }
-  #ui .small{font-weight:400;font-size:13px;color:#bfd7e6}
-  #shopModal{
-    position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);background:#071a26;padding:18px;border-radius:12px;display:none;
-    width:720px;max-width:94vw;color:#eaf6ff;box-shadow:0 10px 40px rgba(0,0,0,0.6);max-height:84vh;overflow:auto;z-index:20;
+  #shopOverlay{
+    position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);background:#0b2430;padding:18px;border-radius:12px;display:none;
+    width:520px;max-width:92vw;color:#eaf6ff;box-shadow:0 8px 30px rgba(0,0,0,0.6)
   }
-  .shop-row{display:flex;justify-content:space-between;align-items:center;padding:8px 4px;border-bottom:1px solid rgba(255,255,255,0.03)}
-  .btn{background:linear-gradient(#0b72a1,#065a85);color:white;border:none;padding:8px 10px;border-radius:6px;cursor:pointer;font-weight:700}
+  .shop-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.03)}
+  button.btn{background:linear-gradient(#0b72a1,#065a85);color:white;border:none;padding:8px 10px;border-radius:6px;cursor:pointer;font-weight:700}
   .muted{color:#9aa7b2;font-size:13px}
-  @media (max-width:900px){ #shopModal{width:94vw;padding:12px} }
 </style>
 </head>
 <body>
-<div id="wrap">
-  <canvas id="canvas"></canvas>
+<div id="gameWrap">
+  <canvas id="c"></canvas>
+  <div id="hud" aria-live="polite"></div>
 
-  <div id="ui">
-    <div id="timer">Time: 05:00</div>
-    <div class="small" id="meta">Pts: 0 · Coins: 0 · Runs: 0</div>
-  </div>
-
-  <div id="shopModal" role="dialog" aria-hidden="true">
-    <h2>Shop — Permanent Purchases</h2>
+  <div id="shopOverlay" role="dialog" aria-hidden="true">
+    <h2>Shop — Permanent Purchases & Time</h2>
     <div id="shopContent"></div>
-    <div style="margin-top:12px;text-align:right">
-      <button id="shopClose" class="btn">Respawn (Start Run)</button>
+    <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
+      <button id="shopClose" class="btn">Close & Start Run</button>
     </div>
   </div>
 </div>
 
 <script>
-/* TimeRunner — Full single-file build
-   - Uses sprites in same folder:
-     idleright.png, idleleft.png,
-     jumpwalk1.png, jumpwalk1left.png,
-     jump2.png, jump2left.png,
-     jump3.png, jump3left.png
-   - Player centered; worldX tracked separately
-   - Chunk-based terrain generation
-   - Cyclops targeting + beam
-   - Reduced enemy hit penalty, higher jump
-   - Shop after death, coins persisted in localStorage
+/* ChronoRun — Full single-file game
+   Mod changes applied:
+   - Cyclops spawn more often
+   - Scorpion & Cyclops are larger (increased SCALE)
+   - Ranged enemies spawn a "block projectile" when they attack (Cyclops)
+   - Melee enemies (Scorpion) do not shoot projectiles
+   - Player can attack with left mouse click (in addition to 'z')
+   - Completed Cyclops beam draw and cleaned up code
 */
 
-// ======= Canvas setup =======
-const canvas = document.getElementById('canvas');
+// ---------- CANVAS SETUP ----------
+const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 function resize(){ canvas.width = innerWidth; canvas.height = innerHeight; }
-window.addEventListener('resize', resize);
+addEventListener('resize', resize);
 resize();
 
-// ======= Config =======
-const SAMPLE_W = 28;            // width of a terrain sample
-const CHUNK_SAMPLES = 120;      // samples per chunk
-const CHUNK_PX = SAMPLE_W * CHUNK_SAMPLES;
-const GENERATE_AHEAD = 1500;    // px ahead of player's worldX to generate to
-const KEEP_BEHIND = 900;        // px behind to keep
+// ---------- CONFIG ----------
+const SAMPLE_W = 32;
+const CHUNK_SAMPLES = 120;
+const WORLD_BUFFER_AHEAD = 1400;
+const WORLD_BUFFER_BEHIND = 1400;
 const GRAVITY = 0.9;
-const JUMP_V = -18;             // higher jump
-const BASE_TIME = 5 * 60;       // seconds per run
-const PACE_MAX_SECONDS = 20;    // ensure mobs spawn if too quiet
-const CYCL_TRACK_MS = 1200;
-const CYCL_LOCK_MS = 500;
-const CYCL_COOLDOWN_MS = 2400;
-const FIXED_STEP = 16;          // ms fixed physics step
+const JUMP_V = -14;
+const START_TIME_SECONDS = 60;
+const MAX_TIME_SECONDS = 300;
+const PACE_MAX_SECONDS = 20;
+const CYCL_TRACK_MS = 1200; // slightly faster tracking
+const CYCL_LOCK_MS = 450;
+const CYCL_COOLDOWN_MS = 2200;
+const SAVE_KEY = 'chronorun_full_save_v1';
+const SCALE = 1.35; // increased scale (+ bigger scorpion & cyclops)
 
-// ======= Save / persistence =======
-const SAVE_KEY = 'timerunner_save_v1';
+// ---------- STORAGE ----------
 let save = loadSave();
 function loadSave(){
   try{
     const raw = localStorage.getItem(SAVE_KEY);
     if(raw){
-      const parsed = JSON.parse(raw);
-      parsed.permWeapons = parsed.permWeapons || [];
-      parsed.unlockedDungeonWeapons = parsed.unlockedDungeonWeapons || [];
-      parsed.coins = parsed.coins || 0;
-      parsed.permSpeed = parsed.permSpeed || 0;
-      parsed.runs = parsed.runs || 0;
-      parsed.equipped = parsed.equipped || 'Stick';
-      parsed.timePenaltyReduction = parsed.timePenaltyReduction || 0;
-      return parsed;
+      const p = JSON.parse(raw);
+      p.permWeapons = p.permWeapons||[];
+      p.unlockedDungeonWeapons = p.unlockedDungeonWeapons||[];
+      p.permMoney = p.permMoney||0;
+      p.permSpeed = p.permSpeed||0;
+      p.runs = p.runs||0;
+      p.equipped = p.equipped||'Stick';
+      p.timePurchase = p.timePurchase||0;
+      p.timePenaltyReduction = p.timePenaltyReduction||0;
+      return p;
     }
-  }catch(e){ console.warn('loadSave', e); }
-  return { permWeapons:[], unlockedDungeonWeapons:[], coins:0, permSpeed:0, runs:0, equipped:'Stick', timePenaltyReduction:0, hasMagnet:false };
+  }catch(e){ console.warn('load save fail', e); }
+  return {permWeapons:[], unlockedDungeonWeapons:[], permMoney:0, permSpeed:0, runs:0, equipped:'Stick', timePurchase:0, timePenaltyReduction:0};
 }
-function saveToStorage(){ localStorage.setItem(SAVE_KEY, JSON.stringify(save)); updateUI(); }
+function saveToStorage(){ localStorage.setItem(SAVE_KEY, JSON.stringify(save)); }
 
-// ======= Sprites: load (safe fallback) =======
+// ---------- SPRITES ----------
 const SPRITE_FILES = {
-  idleright: 'idleright.png',
-  idleleft: 'idleleft.png',
-  jumpwalk1: 'jumpwalk1.png',
-  jumpwalk1left: 'jumpwalk1left.png',
-  jump2: 'jump2.png',
-  jump2left: 'jump2left.png',
-  jump3: 'jump3.png',
-  jump3left: 'jump3left.png'
+  idleright: 'idleright.png', idleleft:'idleleft.png',
+  jumpwalk1:'jumpwalk1.png', jumpwalk1left:'jumpwalk1left.png',
+  jump2:'jump2.png', jump2left:'jump2left.png',
+  jump3:'jump3.png', jump3left:'jump3left.png',
+  scorpionright: 'scorpionright.png', scorpionleft: 'scorpionleft.png',
+  cyclopsright: 'cyclopsright.png', cyclopsleft: 'cyclopsleft.png'
 };
 const SPRITES = {};
 for(const k in SPRITE_FILES){
-  const img = new Image();
-  img.src = SPRITE_FILES[k];
-  img.onload = ()=>{ SPRITES[k] = img; };
-  img.onerror = ()=>{ SPRITES[k] = null; };
+  const img = new Image(); img.src = SPRITE_FILES[k];
+  img.onload = ()=>{ SPRITES[k]=img; };
+  img.onerror = ()=>{ SPRITES[k]=null; };
 }
 
-// ======= Game state =======
-let world = {
-  // terrainSamples maps sample index -> y
-  samples: new Map(),
-  minIndex: 0,
-  maxIndex: -1,
-  generatedMaxIndex: -1,
-  chunks: []
-};
-let enemies = [];    // enemies with worldX, type, hp, etc.
-let cyclopses = [];
-let projectiles = [];
-let items = [];      // pickups: {type:'money'|'dungeon-weapon', name?, worldX, y}
+// ---------- GAME STATE ----------
+let cameraX = 0;
+let terrain = [];
+let platforms = [];
 let dungeons = [];
+let enemies = [];      // Scorpion enemies only
+let cyclopses = [];    // Cyclops special enemies
+let projectiles = [];  // includes player projectiles and cyclops block projectiles
+let items = [];
+let chunks = [];
 
 let points = 0;
-let timer = BASE_TIME;
+let timerSeconds = START_TIME_SECONDS + (save.timePurchase||0);
 let runActive = false;
+let paused = false;
 let lastEncounterTime = performance.now();
+let frameCount = 0;
 
-// ======= Player =======
+// ---------- PLAYER ----------
 const PLAYER = {
-  screenX: null,           // will set to canvas.width/2 in init
-  worldX: 0,               // player's position in world coordinates
-  y: 0,                    // screen Y (we'll control vertical by world terrain)
-  vy: 0,
-  w: 40, h: 56,
-  speed: 4.0,
-  facing: 'right',
-  state: 'idle',
-  animTimer: 0, animFrame: 0,
+  x: 500, y: 0, w: Math.round(40 * SCALE), h: Math.round(56 * SCALE), vy: 0, speed: 3.2, onGround: true,
+  facing: 'right', state: 'idle', animTimer:0, animFrame:0,
+  inventory: [], slot: 0,
   equipped: save.equipped || 'Stick'
 };
 
-// ======= Input =======
+// ---------- INPUT ----------
 const keys = {};
-window.addEventListener('keydown', e => { keys[e.key.toLowerCase()] = true; if([" ","arrowup","arrowdown","arrowleft","arrowright","w","a","s","d"].includes(e.key.toLowerCase())) e.preventDefault(); });
-window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  keys[k] = true;
+  if([' ','arrowup','arrowdown','arrowleft','arrowright','w','a','s','d'].includes(k)) e.preventDefault();
+});
+addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 
-// ======= Enemy & weapon defs =======
-// Reduced time penalties (weaker mobs)
-const ENEMY_DEFS = {
-  Slime: {w:32,h:20,color:'#4cd77a', hp:6, speed:0.9, timePenalty:3, reward:10},
-  Goblin: {w:34,h:28,color:'#7ad97a', hp:12, speed:1.5, timePenalty:4, reward:18},
-  Scorpion: {w:34,h:22,color:'#c38b3c', hp:10, speed:1.4, timePenalty:4, reward:16},
-  Wolf: {w:36,h:24,color:'#8fb4ff', hp:14, speed:2.1, timePenalty:5, reward:22}
-};
+canvas.addEventListener('mousedown', (ev) => {
+  if(ev.button === 0){ // left click
+    playerAttack();
+  }
+});
 
-const WEAPONS = {
-  'Stick': {dmg:4, range:36, cd:14, projectile:false},
-  'Dagger': {dmg:7, range:36, cd:10, projectile:false},
-  'Sword': {dmg:13, range:56, cd:18, projectile:false},
-  'Bow': {dmg:10, range:320, cd:22, projectile:true, speed:11},
-  'Staff': {dmg:14, range:360, cd:26, projectile:true, speed:9},
-  'Laser Wand': {dmg:18, range:700, cd:28, projectile:true, speed:16}
-};
-
-// ======= Utility helpers =======
+// ---------- UTIL ----------
 function rand(a,b){ return Math.random()*(b-a)+a; }
 function rint(a,b){ return Math.floor(rand(a,b+1)); }
 function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
-function fmtTime(s){ const m=Math.floor(s/60), sec=Math.floor(s%60); return `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`; }
+function fmtTime(s){ const m=Math.floor(s/60); const sec=Math.floor(s%60); return `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`; }
 
-// ======= Terrain generation (chunk-based) =======
-const BIOMES = ['grass','desert','snow','mountain'];
-function ensureTerrainForWorldX(worldX){
-  const needIndex = Math.floor((worldX + GENERATE_AHEAD) / SAMPLE_W);
-  while(world.generatedMaxIndex < needIndex){
-    generateChunk(world.generatedMaxIndex + 1);
+// ---------- TERRAIN STREAMING ----------
+let generatedXEnd = 0;
+let generatedXStart = 0;
+
+function ensureTerrainAroundCamera(){
+  const center = PLAYER.x;
+  const needRight = center + WORLD_BUFFER_AHEAD;
+  const needLeft = center - WORLD_BUFFER_BEHIND;
+  while(generatedXEnd < needRight){
+    generateChunk(generatedXEnd);
+    generatedXEnd += CHUNK_SAMPLES * SAMPLE_W;
   }
-  // cleanup behind to save memory
-  const minKeepIndex = Math.floor((world.minIndex) || (Math.floor((world.generatedMaxIndex - Math.floor(KEEP_BEHIND / SAMPLE_W)) ));
-  // remove older samples if needed (we'll keep map keys >= (playerIndex-keep))
-  const keepFrom = Math.floor((PLAYER.worldX - KEEP_BEHIND) / SAMPLE_W);
-  for(const key of Array.from(world.samples.keys())){
-    if(key < keepFrom) { world.samples.delete(key); }
+  while(generatedXStart > needLeft){
+    generatedXStart -= CHUNK_SAMPLES * SAMPLE_W;
+    generateChunk(generatedXStart);
   }
 }
 
-function generateChunk(startIndex){
-  // startIndex is sample index (not px). We'll generate CHUNK_SAMPLES samples starting at startIndex
-  const biome = BIOMES[rint(0, BIOMES.length-1)];
-  const baseY = (biome==='grass') ? canvas.height - 120 : (biome==='desert') ? canvas.height - 140 : (biome==='snow') ? canvas.height - 180 : canvas.height - 260;
-  for(let i = 0; i < CHUNK_SAMPLES; i++){
-    const idx = startIndex + i;
-    const worldX = idx * SAMPLE_W;
+// Generate chunk
+function generateChunk(startX){
+  if(chunks.some(ch => ch.start === startX)) return;
+  const segLen = CHUNK_SAMPLES;
+  const biomeChoices = ['grass','grass','desert','snow','mountain','grass','volcano'];
+  const biome = biomeChoices[rint(0, biomeChoices.length-1)];
+  let base;
+  if(biome === 'grass') base = canvas.height - 120;
+  else if(biome === 'desert') base = canvas.height - 140;
+  else if(biome === 'snow') base = canvas.height - 180;
+  else if(biome === 'mountain') base = canvas.height - 260;
+  else base = canvas.height - 140;
+
+  for(let i=0;i<segLen;i++){
+    const px = startX + i * SAMPLE_W;
     let noise = 0;
-    if(biome==='grass') noise = Math.sin(worldX/130)*16 + rand(-6,6);
-    else if(biome==='desert') noise = Math.sin(worldX/200)*10 + rand(-6,6);
-    else if(biome==='snow') noise = Math.sin(worldX/90)*28 + rand(-10,10);
-    else noise = Math.sin(worldX/70)*80 + rand(-18,18); // mountain
-    const y = clamp(Math.round(baseY + noise), 80, canvas.height - 80);
-    world.samples.set(idx, y);
-    world.maxIndex = Math.max(world.maxIndex, idx);
-    world.generatedMaxIndex = Math.max(world.generatedMaxIndex, idx);
-    // occasionally spawn dungeons within chunk
-    if(Math.random() < 0.012 && i > 6){
-      const dx = worldX + rint(40, SAMPLE_W*4);
-      dungeons.push({worldX: dx, y: (y - 80), w: 80, h: 80, weapon: chooseDungeonWeapon()});
-      items.push({type:'dungeon-weapon', name:dungeons[dungeons.length-1].weapon, worldX: dx, y: y-28, claimed:false});
-      if(Math.random() < 0.22) spawnCyclops(dx + rint(-60,60), y - rint(20,80));
-    }
-    // spawn occasional enemies
-    if(Math.random() < 0.03){
-      const ex = worldX + rint(0, SAMPLE_W-4);
-      const ey = y - 12;
-      spawnEnemyAt(ex, ey, chooseEnemyForBiome(biome));
-    }
-    // platforms in mountain
+    if(biome === 'grass') noise = Math.sin((px)/120) * 18 + rand(-6,6);
+    else if(biome === 'desert') noise = Math.sin(px/180) * 10 + rand(-6,6);
+    else if(biome === 'snow') noise = Math.sin(px/90) * 28 + rand(-10,10);
+    else if(biome === 'mountain') noise = Math.sin(px/70) * 80 + rand(-18,18);
+    else if(biome === 'volcano') noise = Math.sin(px/150) * 20 + rand(-12,12);
+    const y = clamp(Math.round(base + noise), 80, canvas.height - 80);
+    terrain.push({x:px, y});
     if(biome === 'mountain' && Math.random() < 0.06 && i % 6 === 0){
-      const pw = rint(80,160), pxpos = worldX + rint(-20,20), pypos = y - rint(120,260);
-      // store as item to render as platform
-      items.push({type:'platform', x:pxpos, y:pypos, w:pw});
+      const pw = rint(80, 160), pxpos = px + rint(-20,20), pypos = y - rint(120, 260);
+      platforms.push({x: pxpos, y: pypos, w: pw, h: 10});
+    }
+    if(Math.random() < 0.012 && i > 6){
+      const dx = px + rint(60, SAMPLE_W*3);
+      dungeons.push({x: dx, y: y - 56, w: 80, h: 56, weapon: chooseDungeonWeapon(), opened:false});
+    }
+    // spawn scorpions occasionally
+    if(Math.random() < 0.04){
+      const ex = px + rint(40, SAMPLE_W);
+      const ey = y - 10;
+      spawnEnemy('Scorpion', ex, ey);
+    }
+    // increased chance for cyclops in chunk generation (more often)
+    if(Math.random() < 0.018 && biome === 'mountain'){ // higher on mountains
+      const cx = px + rint(120, SAMPLE_W*6);
+      const cy = y - rint(40,120);
+      spawnCyclopsAt(cx, cy, true);
+    } else if(Math.random() < 0.006){ // rarer elsewhere but more overall
+      const cx2 = px + rint(120, SAMPLE_W*6);
+      const cy2 = y - rint(30,90);
+      spawnCyclopsAt(cx2, cy2, false);
     }
   }
-  world.chunks.push({startIndex: startIndex, biome});
+  chunks.push({start:startX, len:segLen*SAMPLE_W, biome});
+  terrain.sort((a,b)=>a.x-b.x);
 }
 
-// pick dungeon weapon
-function chooseDungeonWeapon(){ const pool = ['Dagger','Sword','Bow','Staff','Laser Wand','Bow','Sword','Dagger']; return pool[rint(0,pool.length-1)]; }
+// ---------- ENEMY DEFINITIONS ----------
+const ENEMY_DEFS = {
+  Scorpion: {w: Math.round(34 * SCALE), h: Math.round(22 * SCALE), color:'#c38b3c', hp: 12, speed:2.4, timePenalty:7, reward:22},
+  Cyclops:  {w: Math.round(92 * SCALE), h: Math.round(92 * SCALE), color:'#9a8f8f', hp: 90, speed:0.14, timePenalty:14, reward:360}
+};
+
+// choose enemy - now only scorpion as base
 function chooseEnemyForBiome(b){
-  if(b==='grass') return Math.random() < 0.5 ? 'Slime' : 'Goblin';
-  if(b==='desert') return Math.random() < 0.6 ? 'Scorpion' : 'Goblin';
-  if(b==='snow') return Math.random() < 0.6 ? 'Slime' : 'Wolf';
-  if(b==='mountain') return Math.random() < 0.6 ? 'Wolf' : 'Slime';
-  return 'Slime';
+  return 'Scorpion';
 }
-
-// ======= Entities management =======
-function spawnEnemyAt(worldX, worldY, type){
-  // avoid overlapping spawn
-  for(const e of enemies){ if(Math.abs(e.worldX - worldX) < 40 && Math.abs(e.y - worldY) < 20) return; }
-  const def = ENEMY_DEFS[type] || ENEMY_DEFS.Slime;
-  enemies.push({worldX, y: worldY, type, w:def.w, h:def.h, hp:def.hp, color:def.color, speed:def.speed, timePenalty:def.timePenalty, reward:def.reward, id:Date.now() + '_' + Math.random()});
-}
-function spawnEnemy(type, baseY){
-  // helper to spawn ahead near player
-  const ex = PLAYER.worldX + rint(200, 520);
-  spawnEnemyAt(ex, baseY, type || 'Slime');
-}
-function spawnCyclops(worldX, y){
-  cyclopses.push({worldX, y, hp:36, state:'idle', stateStart: performance.now(), target:null, lastFired:0, id:'cycl_'+Date.now()+'_'+Math.random()});
-}
-
-// ======= Player attack & projectiles =======
-let attackCooldown = 0;
-function playerAttack(){
-  const w = WEAPONS[PLAYER.equipped] || WEAPONS['Stick'];
-  if(attackCooldown > 0) return;
-  attackCooldown = w.cd;
-  const dir = (PLAYER.facing === 'left') ? -1 : 1;
-  if(w.projectile){
-    projectiles.push({x: PLAYER.worldX + dir*36, y: PLAYER.y - 8, vx: dir * (w.speed || 10), vy: 0, dmg: w.dmg, life: w.range});
-  } else {
-    const r = w.range;
-    const minX = PLAYER.worldX + (dir>0 ? 0 : -r), maxX = PLAYER.worldX + (dir>0 ? r : 0);
-    enemies.slice().forEach(e => {
-      if(e.worldX >= minX && e.worldX <= maxX && Math.abs(e.y - PLAYER.y) < 60){
-        e.hp -= (w.dmg + rint(-2,2));
-        if(e.hp <= 0) killEnemy(e);
-      }
-    });
-    cyclopses.slice().forEach(c => {
-      const d = Math.hypot(c.worldX - PLAYER.worldX, c.y - PLAYER.y);
-      if(d < r/10 + 48){ c.hp -= (w.dmg + rint(-2,2)); if(c.hp <= 0) killCyclops(c); }
-    });
-  }
-}
-function updateProjectiles(dt){
-  projectiles.slice().forEach(p => {
-    p.x += p.vx * (dt/16);
-    p.y += p.vy * (dt/16);
-    p.life -= Math.abs(p.vx) * (dt/16);
-    enemies.slice().forEach(e => {
-      if(Math.abs(p.x - e.worldX) < e.w/2 + 8 && Math.abs(p.y - e.y) < e.h/2 + 8){
-        e.hp -= p.dmg; projectiles = projectiles.filter(pp => pp !== p);
-        if(e.hp <= 0) killEnemy(e);
-      }
-    });
-    cyclopses.slice().forEach(c => {
-      if(Math.abs(p.x - c.worldX) < 36 && Math.abs(p.y - c.y) < 36){
-        c.hp -= p.dmg; projectiles = projectiles.filter(pp => pp !== p);
-        if(c.hp <= 0) killCyclops(c);
-      }
-    });
-    if(p.life <= 0) projectiles = projectiles.filter(pp => pp !== p);
+function spawnEnemy(type, x, y){
+  const def = ENEMY_DEFS[type] || ENEMY_DEFS.Scorpion;
+  enemies.push({
+    type, x, y, vx:0, vy:0, w:def.w, h:def.h, hp:def.hp, maxHp:def.hp, color:def.color, speed:def.speed,
+    timePenalty:def.timePenalty, reward:def.reward, ai:0, id: type+'_'+Date.now()+'_'+Math.random(),
+    facing: (x > PLAYER.x) ? 'left' : 'right'
   });
 }
-function killEnemy(e){
-  enemies = enemies.filter(x => x !== e);
-  points += e.reward || 20;
-  save.coins += Math.max(3, Math.floor((e.reward || 12) / 2));
-  if(Math.random() < 0.12) items.push({type:'money', amount: rint(6,40), worldX: e.worldX, y: e.y});
-  if(Math.random() < 0.06) items.push({type:'dungeon-weapon', name: chooseDungeonWeapon(), worldX: Math.floor(e.worldX), y: e.y, claimed:false});
-  if(Math.random() < 0.22) timer = Math.min(timer + 1, BASE_TIME);
+
+// cyclops spawn (tougher, retains attack pattern)
+function spawnCyclopsAt(x, y, inMountain=false){
+  const def = ENEMY_DEFS.Cyclops;
+  cyclopses.push({
+    x, y, hp: def.hp, maxHp:def.hp, state:'idle', stateStart: performance.now(), target:null, inMountain: !!inMountain,
+    id:'cycl_'+Date.now()+'_'+Math.random(), lastFired:0, facing: (x > PLAYER.x) ? 'left' : 'right'
+  });
+}
+
+// ---------- PICKUPS / DUNGEONS ----------
+function chooseDungeonWeapon(){ const pool = ['Wooden Sword','Iron Sword','Ice Dagger','Great Axe','Fire Staff','Laser Wand','Magic Wand','Bow']; return pool[rint(0,pool.length-1)]; }
+
+function pickUpItemWorld(it){
+  if(it.type === 'money'){ save.permMoney += it.amount; points += it.amount; }
+  else if(it.type === 'dungeon-weapon' && !it.claimed){
+    it.claimed = true;
+    if(!save.unlockedDungeonWeapons.includes(it.name)) save.unlockedDungeonWeapons.push(it.name);
+    addToInventory({name: it.name, type:'weapon', fromDungeon:true});
+    points += 30;
+  }
+  saveToStorage();
+}
+
+function addToInventory(item){
+  if(!item) return;
+  PLAYER.inventory.push(item);
+  if(PLAYER.inventory.length > 3) PLAYER.inventory.shift();
+  if(!PLAYER.equipped && item.type === 'weapon') PLAYER.equipped = item.name;
+}
+
+// ---------- WEAPONS & COMBAT ----------
+const WEAPONS = {
+  'Stick': {dmg:4, range:36, cd:12, projectile:false},
+  'Wooden Sword': {dmg:9, range:48, cd:14, projectile:false},
+  'Iron Sword': {dmg:14, range:56, cd:18, projectile:false},
+  'Ice Dagger': {dmg:8, range:38, cd:10, projectile:false},
+  'Great Axe': {dmg:22, range:48, cd:32, projectile:false},
+  'Bow': {dmg:10, range:340, cd:22, projectile:true, speed:10},
+  'Magic Wand': {dmg:12, range:360, cd:26, projectile:true, speed:9},
+  'Fire Staff': {dmg:16, range:360, cd:30, projectile:true, speed:8},
+  'Laser Wand': {dmg:18, range:700, cd:28, projectile:true, speed:16}
+};
+let attackCooldown = 0;
+
+// Player attack uses weapon in slot or equipped -> damages enemies (Scorpion) and cyclopses
+function playerAttack(){
+  const eq = PLAYER.inventory[PLAYER.slot] ? PLAYER.inventory[PLAYER.slot].name : (PLAYER.equipped || 'Stick');
+  const w = WEAPONS[eq] || WEAPONS['Stick'];
+  if(attackCooldown > 0) return;
+  attackCooldown = w.cd;
+  const dir = PLAYER.facing === 'left' ? -1 : 1;
+  if(w.projectile){
+    // spawn a player projectile block
+    projectiles.push({x: PLAYER.x + dir*36, y: PLAYER.y - 12, vx: dir * (w.speed || 10), vy: 0, dmg: w.dmg, life: w.range, owner:'player', type:'projectile'});
+  } else {
+    // melee hit
+    const r = w.range;
+    const minX = PLAYER.x + (dir>0 ? 0 : -r);
+    const maxX = PLAYER.x + (dir>0 ? r : 0);
+    enemies.slice().forEach(e=>{
+      if(e.x >= minX && e.x <= maxX && Math.abs(e.y - PLAYER.y) < 60){
+        e.hp -= (w.dmg + rint(-2,2));
+        if(e.hp <= 0) onEnemyKill(e);
+        lastEncounterTime = performance.now();
+      }
+    });
+    cyclopses.slice().forEach(c=>{
+      const d = Math.hypot(c.x - PLAYER.x, c.y - PLAYER.y);
+      if(d < r/10 + 60){ c.hp -= (w.dmg + rint(-2,2)); if(c.hp <= 0) onCyclopsKill(c); }
+    });
+  }
+}
+
+// projectile update and collision (player + cyclops 'block' projectiles)
+function updateProjectiles(dt){
+  projectiles.slice().forEach(p=>{
+    p.x += (p.vx || 0) * (dt/16);
+    p.y += (p.vy || 0) * (dt/16);
+    p.life = (p.life === undefined) ? 99999 : p.life - Math.abs(p.vx) * (dt/16);
+    // collisions with enemies
+    if(p.owner === 'player'){
+      enemies.slice().forEach(e=>{
+        if(Math.abs(p.x - e.x) < e.w/2 + 12 && Math.abs(p.y - e.y) < e.h/2 + 12){
+          e.hp -= p.dmg; projectiles = projectiles.filter(pp=>pp!==p); if(e.hp<=0) onEnemyKill(e);
+        }
+      });
+      cyclopses.slice().forEach(c=>{
+        if(Math.abs(p.x - c.x) < 36 && Math.abs(p.y - c.y) < 36){ c.hp -= p.dmg; projectiles = projectiles.filter(pp=>pp!==p); if(c.hp<=0) onCyclopsKill(c); }
+      });
+    } else if(p.owner === 'cyclops'){
+      // cyclops block projectile hits player
+      if(Math.abs(p.x - PLAYER.x) < PLAYER.w/2 + 12 && Math.abs(p.y - PLAYER.y) < PLAYER.h/2 + 12){
+        // apply time penalty effect (like being hit)
+        const reduction = save.timePenaltyReduction || 0;
+        const pen = Math.max(2, Math.round((14) * (1 - reduction))); // cyclops hit penalty
+        timerSeconds = Math.max(0, timerSeconds - pen);
+        // knockback
+        if(p.x < PLAYER.x) PLAYER.x += 18; else PLAYER.x -= 18;
+        projectiles = projectiles.filter(pp=>pp!==p);
+        lastEncounterTime = performance.now();
+      }
+    }
+    if(p.life <= 0) projectiles = projectiles.filter(pp=>pp!==p);
+  });
+}
+
+// ---------- ON KILL ----------
+function onEnemyKill(e){
+  enemies = enemies.filter(x=>x!==e);
+  points += e.reward || 30;
+  save.permMoney += Math.max(4, Math.floor((e.reward || 20)/2));
+  if(Math.random() < 0.14) items.push({type:'money', amount: rint(6,40), x: e.x, y: e.y});
+  if(Math.random() < 0.06) items.push({type:'dungeon-weapon', name: chooseDungeonWeapon(), x: Math.floor(e.x), claimed:false});
+  if(Math.random() < 0.25) timerSeconds = Math.min(timerSeconds + 1, START_TIME_SECONDS + (save.timePurchase||0));
   lastEncounterTime = performance.now();
   saveToStorage();
 }
-function killCyclops(c){
-  cyclopses = cyclopses.filter(x => x !== c);
-  items.push({type:'dungeon-weapon', name:'Laser Wand', worldX: Math.floor(c.worldX), y: c.y - 10, claimed:false});
-  save.coins += 80; points += 240; lastEncounterTime = performance.now();
+function onCyclopsKill(c){
+  cyclopses = cyclopses.filter(x=>x!==c);
+  items.push({type:'dungeon-weapon', name:'Laser Wand', x: Math.floor(c.x), claimed:false});
+  save.permMoney += 80; points += 240; lastEncounterTime = performance.now();
   saveToStorage();
 }
 
-// ======= Cyclops AI & beam =======
+// ---------- HIT FROM ENEMY ----------
+function enemyHitsPlayer(e){
+  const reduction = save.timePenaltyReduction || 0;
+  const pen = Math.max(2, Math.round((e.timePenalty || 7) * (1 - reduction)));
+  timerSeconds = Math.max(0, timerSeconds - pen);
+  if(e.x < PLAYER.x) e.x -= 18; else e.x += 18;
+  lastEncounterTime = performance.now();
+}
+
+// ---------- CYClops BEHAVIOR (tracking, beam attack, spawn block projectile) ----------
 function updateCyclopses(dt){
   const now = performance.now();
-  cyclopses.slice().forEach(c => {
-    const dist = Math.hypot(PLAYER.worldX - c.worldX, PLAYER.y - c.y);
+  cyclopses.slice().forEach(c=>{
+    c.facing = (PLAYER.x > c.x) ? 'right' : 'left';
+    const dist = Math.hypot(PLAYER.x - c.x, PLAYER.y - c.y);
     if(c.state === 'idle'){
-      if(dist < 1400) c.worldX += (PLAYER.worldX > c.worldX ? 0.12 : -0.12) * (dt/16);
-      if(dist < 640 && Math.random() < 0.006) { c.state = 'track'; c.stateStart = now; c.target = {x: PLAYER.worldX, y: PLAYER.y}; }
+      if(dist < 1600) c.x += (PLAYER.x > c.x ? ENEMY_DEFS.Cyclops.speed : -ENEMY_DEFS.Cyclops.speed) * (dt/16);
+      // slightly higher chance to start tracking when player is near
+      if(dist < 700 && Math.random() < 0.012) { c.state = 'track'; c.stateStart = now; c.target = {x: PLAYER.x, y: PLAYER.y}; }
     } else if(c.state === 'track'){
-      c.target = {x: PLAYER.worldX, y: PLAYER.y};
+      c.target = {x: PLAYER.x, y: PLAYER.y};
       if(now - c.stateStart >= CYCL_TRACK_MS) { c.state = 'lock'; c.stateStart = now; }
     } else if(c.state === 'lock'){
       if(now - c.stateStart >= CYCL_LOCK_MS){
-        fireCyclopsBeam(c, c.target || {x:PLAYER.worldX, y:PLAYER.y});
+        // Instead of a pure instant beam hit only, we also spawn a "block projectile" that travels to the target.
+        // Keep beam visuals for telegraph, but spawn projectile that can hit player and be dodged.
+        spawnCyclopsBlockProjectile(c, c.target || {x: PLAYER.x, y: PLAYER.y});
         c.lastFired = now; c.state = 'cooldown'; c.stateStart = now;
       }
     } else if(c.state === 'cooldown'){
@@ -344,33 +403,48 @@ function updateCyclopses(dt){
     }
   });
 }
+function spawnCyclopsBlockProjectile(c, target){
+  const sx = c.x, sy = c.y - 4;
+  const tx = (target.x === undefined) ? PLAYER.x : target.x;
+  const ty = (target.y === undefined) ? PLAYER.y : target.y - 8;
+  const ang = Math.atan2(ty - sy, tx - sx);
+  const speed = 9 + Math.random()*3;
+  const vx = Math.cos(ang) * speed;
+  const vy = Math.sin(ang) * speed;
+  // create visible block projectile that damages player/time when colliding
+  projectiles.push({
+    x: sx + Math.cos(ang)*24,
+    y: sy + Math.sin(ang)*24,
+    vx, vy,
+    life: 1200,
+    owner: 'cyclops',
+    type: 'block',
+    dmg: 0 // dmg represented as time penalty
+  });
+}
+
+// keep old beam behavior for visual telegraph & area hitting enemies
 function fireCyclopsBeam(c, target){
-  // beam from c.worldX to infinite in that direction. If player is near line -> apply time penalty
-  const sx = c.worldX, sy = c.y - 4;
+  const sx = c.x, sy = c.y - 4;
   const tx = target.x, ty = target.y - 8;
   const ang = Math.atan2(ty - sy, tx - sx);
   const length = Math.max(canvas.width, canvas.height) * 2;
   const ex = sx + Math.cos(ang) * length, ey = sy + Math.sin(ang) * length;
-  const d = pointToLineDistance(PLAYER.worldX, PLAYER.y, sx, sy, ex, ey);
+  const d = pointToLineDistance(PLAYER.x, PLAYER.y, sx, sy, ex, ey);
   if(d < 18){
     const reduction = save.timePenaltyReduction || 0;
-    const penalty = Math.max(6, Math.round(12 * (1 - reduction)));
-    timer = Math.max(0, timer - penalty);
+    const penalty = Math.max(8, Math.round(14 * (1 - reduction)));
+    timerSeconds = Math.max(0, timerSeconds - penalty);
     lastEncounterTime = performance.now();
   }
-  // beam damages nearby enemies
-  enemies.slice().forEach(e => {
-    const de = pointToLineDistance(e.worldX, e.y, sx, sy, ex, ey);
-    if(de < 22){ e.hp -= 18; if(e.hp <= 0) killEnemy(e); }
+  enemies.slice().forEach(e=>{
+    const de = pointToLineDistance(e.x, e.y, sx, sy, ex, ey);
+    if(de < 22){ e.hp -= 18; if(e.hp <= 0) onEnemyKill(e); }
   });
 }
-
-// geometry helper
 function pointToLineDistance(px,py,x1,y1,x2,y2){
   const A = px - x1, B = py - y1, C = x2 - x1, D = y2 - y1;
-  const dot = A*C + B*D;
-  const len_sq = C*C + D*D;
-  let param = -1;
+  const dot = A*C + B*D; const len_sq = C*C + D*D; let param=-1;
   if(len_sq !== 0) param = dot / len_sq;
   let xx, yy;
   if(param < 0){ xx = x1; yy = y1; }
@@ -379,591 +453,424 @@ function pointToLineDistance(px,py,x1,y1,x2,y2){
   const dx = px - xx, dy = py - yy; return Math.hypot(dx,dy);
 }
 
-// ======= Pacing =======
+// ---------- PACING ----------
 function ensurePacing(){
-  if((performance.now() - lastEncounterTime) > (PACE_MAX_SECONDS * 1000)){
-    const count = rint(2,4);
+  if((performance.now() - lastEncounterTime) > (PACE_MAX_SECONDS*1000)){
+    const count = rint(3,6); // spawn more than before
     for(let i=0;i<count;i++){
-      const ex = PLAYER.worldX + rint(220, 520);
-      spawnEnemyAt(ex, sampleTerrainY(ex) - 12, chooseEnemyForBiome(getBiomeAtWorldX(ex)));
+      const ex = PLAYER.x + rint(200, 520);
+      const ey = sampleTerrainY(ex) - 10;
+      spawnEnemy(chooseEnemyForBiome(getBiomeAtX(ex)), ex, ey);
     }
-    if(Math.random() < 0.45) spawnCyclops(PLAYER.worldX + rint(300,720), sampleTerrainY(PLAYER.worldX + 600) - rint(0,80));
+    // much higher cyclops chance on pacing
+    if(Math.random() < 0.75) spawnCyclopsAt(PLAYER.x + rint(240, 720), sampleTerrainY(PLAYER.x + 600) - rint(0,120), false);
     lastEncounterTime = performance.now();
   }
-  let near = enemies.filter(e => Math.abs(e.worldX - PLAYER.worldX) < 500).length;
+  let near = enemies.filter(e => Math.abs(e.x - PLAYER.x) < 500).length;
   if(near < 4){
     for(let i=0;i<4-near;i++){
-      const ex = PLAYER.worldX + rint(220, 520);
-      spawnEnemyAt(ex, sampleTerrainY(ex) - 12, chooseEnemyForBiome(getBiomeAtWorldX(ex)));
+      const ex = PLAYER.x + rint(220, 520);
+      spawnEnemy(chooseEnemyForBiome(getBiomeAtX(ex)), ex, sampleTerrainY(ex)-10);
     }
   }
-  if(enemies.length > 250) enemies = enemies.slice(0,250);
 }
 
-// ======= terrain sampling =======
+// ---------- TERRAIN UTIL ----------
 function sampleTerrainY(worldX){
-  const idx = Math.floor(worldX / SAMPLE_W);
-  if(world.samples.has(idx)) return world.samples.get(idx);
-  // if not generated yet, fallback to default baseline
-  return canvas.height - 140;
-}
-function getBiomeAtWorldX(worldX){
-  // find chunk containing index
-  const idx = Math.floor(worldX / SAMPLE_W);
-  for(const ch of world.chunks){
-    if(idx >= ch.startIndex && idx < ch.startIndex + CHUNK_SAMPLES) return ch.biome;
+  if(terrain.length === 0) return canvas.height - 140;
+  let low = 0, high = terrain.length - 1;
+  if(worldX <= terrain[low].x) return terrain[low].y;
+  if(worldX >= terrain[high].x) return terrain[high].y;
+  while(low <= high){
+    const mid = Math.floor((low + high) / 2);
+    const mx = terrain[mid].x;
+    if(mx === worldX) return terrain[mid].y;
+    if(mx < worldX) low = mid + 1;
+    else high = mid - 1;
   }
+  const left = terrain[Math.max(0, high)];
+  const right = terrain[Math.min(terrain.length-1, low)];
+  if(!left) return right.y;
+  if(!right) return left.y;
+  const t = (worldX - left.x) / (right.x - left.x);
+  return Math.round(left.y * (1-t) + right.y * t);
+}
+function getBiomeAtX(x){
+  for(const ch of chunks){ if(x >= ch.start && x < ch.start + ch.len) return ch.biome; }
   return 'grass';
 }
 
-// ======= Timers / run control =======
-let accumulator = 0;
-let lastRAF = performance.now();
-let timerTickHandle = null;
+// ---------- GAME LOOP ----------
+function update(dt){
+  if(!runActive || paused) return;
+  frameCount++;
 
-function startRun(){
-  // initialize world & player, clear entities
-  world.samples.clear(); world.chunks.length = 0; world.generatedMaxIndex = -1; world.maxIndex = -1; world.minIndex = 0;
-  enemies.length = 0; cyclopses.length = 0; projectiles.length = 0; items.length = 0; dungeons.length = 0;
-  points = 0; timer = BASE_TIME; runActive = true; lastEncounterTime = performance.now();
-
-  PLAYER.worldX = 400; // start point in world
-  PLAYER.screenX = Math.floor(canvas.width / 2);
-  PLAYER.y = sampleTerrainY(PLAYER.worldX) - PLAYER.h/2 + 8;
-  PLAYER.vy = 0;
-  PLAYER.equipped = save.equipped || 'Stick';
-  save.runs = save.runs || 0;
-  saveToStorage();
-
-  // pre-generate a bit
-  ensureTerrainForWorldX(PLAYER.worldX);
-  startTimerTick();
-  lastRAF = performance.now();
-  requestAnimationFrame(raf);
-}
-
-function endRun(){
-  runActive = false;
-  if(timerTickHandle) clearInterval(timerTickHandle);
-  save.runs = (save.runs || 0) + 1;
-  saveToStorage();
-  openShop();
-}
-
-function startTimerTick(){
-  if(timerTickHandle) clearInterval(timerTickHandle);
-  timerTickHandle = setInterval(() => {
-    if(runActive) {
-      timer = Math.max(0, timer - 1);
-      updateUI();
-      if(timer <= 0) endRun();
-    }
-  }, 1000);
-}
-
-// ======= Input actions binding =======
-window.addEventListener('keydown', (e) => {
-  if(e.key === ' '){ // space = attack
-    e.preventDefault();
-    playerAttack();
-  }
-});
-
-// ======= Fixed-step loop (stable physics) =======
-function raf(now){
-  const dt = now - lastRAF;
-  lastRAF = now;
-  accumulator += dt;
-  // cap accumulator to avoid spiral-of-death
-  if(accumulator > 200) accumulator = 200;
-  while(accumulator >= FIXED_STEP){
-    fixedUpdate(FIXED_STEP);
-    accumulator -= FIXED_STEP;
-  }
-  render();
-  if(runActive) requestAnimationFrame(raf);
-}
-
-let attackCooldown = 0;
-function fixedUpdate(dt){
-  if(!runActive) return;
-  // handle input: move world relative to player
+  // movement
   let moving = false;
-  const speedFactor = 1 + (save.permSpeed || 0);
-  if(keys['a'] || keys['arrowleft']){ PLAYER.worldX -= PLAYER.speed * speedFactor * (dt/16); PLAYER.facing = 'left'; moving = true; }
-  if(keys['d'] || keys['arrowright']){ PLAYER.worldX += PLAYER.speed * speedFactor * (dt/16); PLAYER.facing = 'right'; moving = true; }
+  if(keys['a'] || keys['arrowleft']){ PLAYER.x -= PLAYER.speed * (1 + (save.permSpeed||0)) * (dt/16); PLAYER.facing='left'; moving = true; }
+  if(keys['d'] || keys['arrowright']){ PLAYER.x += PLAYER.speed * (1 + (save.permSpeed||0)) * (dt/16); PLAYER.facing='right'; moving = true; }
 
-  // jumping
-  if((keys['w'] || keys['arrowup'] || keys[' ']) && PLAYER.vy === 0){
-    // Only initiate on initial press; basic edge detection by seeing vy === 0 and grounded via terrain
-    PLAYER.vy = JUMP_V;
+  // attack (z)
+  if(keys['z']){ playerAttack(); }
+
+  // inventory and drop
+  if(keys['1']) PLAYER.slot = 0;
+  if(keys['2']) PLAYER.slot = 1;
+  if(keys['3']) PLAYER.slot = 2;
+  if(keys['p']){ if(PLAYER.inventory[PLAYER.slot]){ const dropped = PLAYER.inventory.splice(PLAYER.slot,1)[0]; items.push({type:'dungeon-weapon', name:dropped.name, x: PLAYER.x + rint(-24,24), y: sampleTerrainY(PLAYER.x) - 10, claimed:false}); if(PLAYER.slot >= PLAYER.inventory.length) PLAYER.slot = PLAYER.inventory.length - 1; keys['p'] = false; } }
+
+  // jump
+  if((keys['w'] || keys['arrowup'] || keys[' ']) && PLAYER.onGround){
+    PLAYER.vy = JUMP_V; PLAYER.onGround = false;
   }
-  // gravity & vertical move
+
+  // gravity
   PLAYER.vy += GRAVITY * (dt/16);
   PLAYER.y += PLAYER.vy * (dt/16);
 
-  // ground collision: sample at player's worldX
-  const groundY = sampleTerrainY(PLAYER.worldX);
-  const targetY = groundY - PLAYER.h/2 + 8;
-  if(PLAYER.y > targetY){
-    PLAYER.y = targetY;
-    PLAYER.vy = 0;
+  // platform collision
+  let stood = false;
+  for(const p of platforms){
+    if(PLAYER.x >= p.x && PLAYER.x <= p.x + p.w && PLAYER.y >= p.y - 24 && PLAYER.y <= p.y + 8 && PLAYER.vy >= 0){
+      PLAYER.y = p.y; PLAYER.vy = 0; PLAYER.onGround = true; stood = true; break;
+    }
+  }
+  if(!stood){
+    const gy = sampleTerrainY(PLAYER.x);
+    if(PLAYER.y >= gy - PLAYER.h/2 + 8){
+      PLAYER.y = gy - PLAYER.h/2 + 8;
+      PLAYER.vy = 0; PLAYER.onGround = true;
+    } else PLAYER.onGround = false;
   }
 
   // animation state
-  if(PLAYER.vy !== 0) PLAYER.state = 'jump';
+  if(!PLAYER.onGround) PLAYER.state = 'jump';
   else if(moving) PLAYER.state = 'walk';
   else PLAYER.state = 'idle';
-  PLAYER.animTimer += dt;
-  if(PLAYER.animTimer > 110) { PLAYER.animTimer = 0; PLAYER.animFrame = (PLAYER.animFrame + 1) % 3; }
 
-  // update projectiles & cooldown
+  // cooldowns
   if(attackCooldown > 0) attackCooldown = Math.max(0, attackCooldown - (dt/16));
   updateProjectiles(dt);
 
-  // update enemies: basic chase behavior
-  for(const e of enemies){
-    const dx = PLAYER.worldX - e.worldX;
-    if(Math.abs(dx) < 700) e.worldX += Math.sign(dx) * e.speed * (dt/16);
-    else e.worldX += (Math.random()-0.5) * 0.25;
-    // vertical correct to terrain
-    e.y = sampleTerrainY(e.worldX) - 10;
-    // collision with player
-    if(Math.abs(e.worldX - PLAYER.worldX) < 28 && Math.abs(e.y - PLAYER.y) < 40){
-      applyHitPenalty(e.timePenalty || 4);
-      // push enemy away to avoid multiple hits instantly
-      e.worldX += (e.worldX < PLAYER.worldX ? -16 : 16);
-      lastEncounterTime = performance.now();
+  // enemies movement & collision
+  enemies.forEach(e=>{
+    e.ai = (e.ai||0) + dt;
+    const dx = PLAYER.x - e.x;
+    if(Math.abs(dx) < 700){
+      const dir = Math.sign(dx);
+      e.x += dir * e.speed * (dt/16);
+      e.facing = dir > 0 ? 'right' : 'left';
+    } else {
+      e.x += (Math.random()-0.5) * 0.25;
     }
-  }
+    const gy = sampleTerrainY(e.x);
+    if(e.y < gy - 10) e.y += 4 * (dt/16);
+    else e.y = gy - 10;
+    // contact damage
+    if(Math.abs(e.x - PLAYER.x) < (e.w/2 + PLAYER.w/2 - 6) && Math.abs(e.y - PLAYER.y) < 40){
+      enemyHitsPlayer(e);
+    }
+  });
 
-  // cyclops updates
+  // cyclops update (attack pattern retained, but now spawns "block" projectiles)
   updateCyclopses(dt);
 
-  // items pickup
-  items.slice().forEach(it => {
-    if(Math.abs(it.worldX - PLAYER.worldX) < 28 && Math.abs((it.y || sampleTerrainY(it.worldX)) - PLAYER.y) < 36){
-      if(it.type === 'money'){ save.coins += it.amount; points += it.amount; }
-      else if(it.type === 'dungeon-weapon' && !it.claimed){ it.claimed = true; if(!save.unlockedDungeonWeapons.includes(it.name)) save.unlockedDungeonWeapons.push(it.name); points += 30; }
-      items = items.filter(x => x !== it);
+  // pickups
+  items.slice().forEach(it=>{
+    if(Math.abs(it.x - PLAYER.x) < 28 && Math.abs((it.y||sampleTerrainY(it.x)) - PLAYER.y) < 40){
+      if(it.type === 'money'){ save.permMoney += it.amount; points += it.amount; }
+      else if(it.type === 'dungeon-weapon' && !it.claimed){
+        it.claimed = true;
+        if(!save.unlockedDungeonWeapons.includes(it.name)) save.unlockedDungeonWeapons.push(it.name);
+        addToInventory({name: it.name, type:'weapon', fromDungeon:true});
+        points += 30;
+      }
+      items = items.filter(x=>x!==it);
       saveToStorage();
     }
   });
 
-  // ensure terrain generated and pacing
-  ensureTerrainForWorldX(PLAYER.worldX);
-  if(Math.random() < 0.002) ensurePacing();
-
-  // cap heavy arrays if necessary
-  if(enemies.length > 300) enemies = enemies.slice(0,300);
-}
-
-// ======= Hit penalty application =======
-function applyHitPenalty(secs){
-  const reduction = save.timePenaltyReduction || 0;
-  const pen = Math.max(2, Math.round(secs * (1 - reduction)));
-  timer = Math.max(0, timer - pen);
-  lastEncounterTime = performance.now();
-}
-
-// ======= Rendering =======
-function render(){
-  // clear background
-  ctx.fillStyle = '#6eaedb'; ctx.fillRect(0,0,canvas.width,canvas.height);
-
-  // parallax background band
-  ctx.fillStyle = '#0b2a3a'; ctx.fillRect(0, canvas.height - 300, canvas.width, 300);
-
-  // camera left edge worldX
-  const camLeftWorldX = PLAYER.worldX - PLAYER.screenX;
-
-  // draw terrain samples in visible region
-  const startIdx = Math.floor((camLeftWorldX - 200) / SAMPLE_W);
-  const endIdx = Math.ceil((camLeftWorldX + canvas.width + 200) / SAMPLE_W);
-  for(let idx = startIdx; idx <= endIdx; idx++){
-    const y = world.samples.has(idx) ? world.samples.get(idx) : (canvas.height - 140);
-    const sx = (idx * SAMPLE_W) - camLeftWorldX;
-    const biome = getBiomeAtWorldX(idx * SAMPLE_W);
-    let color = (biome === 'desert') ? '#C9B17A' : (biome === 'snow') ? '#DFF6FF' : (biome === 'mountain') ? '#9EA3A8' : '#2b6b3a';
-    ctx.fillStyle = color;
-    ctx.fillRect(sx, y, SAMPLE_W + 1, canvas.height - y);
-  }
-
-  // draw dungeons
-  dungeons.forEach(d => {
-    const sx = d.worldX - camLeftWorldX;
-    if(sx < -200 || sx > canvas.width + 200) return;
-    ctx.fillStyle = '#B05400'; ctx.fillRect(sx - 12, d.y - 40, 64, 40);
-    ctx.fillStyle = '#351E12'; ctx.fillRect(sx - 12, d.y - 40, 64, 8);
-  });
-
-  // draw items (pickups & platforms)
-  items.forEach(it => {
-    const sx = it.worldX - camLeftWorldX;
-    if(sx < -200 || sx > canvas.width + 200) return;
-    if(it.type === 'money'){ ctx.fillStyle = '#ffd86b'; ctx.fillRect(sx - 6, (it.y || sampleTerrainY(it.worldX)) - 18, 12, 12); }
-    else if(it.type === 'dungeon-weapon'){ ctx.fillStyle = '#ffd86b'; ctx.fillRect(sx - 8, (it.y || sampleTerrainY(it.worldX)) - 22, 16, 14); ctx.fillStyle = '#000'; ctx.fillText('W', sx - 2, (it.y || sampleTerrainY(it.worldX)) - 10); }
-    else if(it.type === 'platform'){ ctx.fillStyle = '#7b5a3a'; ctx.fillRect(sx, it.y, it.w, 10); }
-  });
-
-  // draw enemies
-  enemies.forEach(e => {
-    const sx = e.worldX - camLeftWorldX;
-    if(sx < -200 || sx > canvas.width + 200) return;
-    ctx.fillStyle = e.color || '#c94b4b';
-    ctx.fillRect(sx - e.w/2, e.y - e.h, e.w, e.h);
-    // hp bar
-    ctx.fillStyle = '#000'; ctx.fillRect(sx - e.w/2, e.y - e.h - 8, e.w, 5);
-    ctx.fillStyle = '#ff6b6b'; ctx.fillRect(sx - e.w/2, e.y - e.h - 8, e.w * clamp(e.hp / (ENEMY_DEFS[e.type]?.hp || 16), 0, 1), 5);
-  });
-
-  // draw cyclops (with tracking line if applicable)
-  cyclopses.forEach(c => {
-    const sx = c.worldX - camLeftWorldX;
-    if(sx < -400 || sx > canvas.width + 400) return;
-    const sy = c.y - 24;
-    ctx.fillStyle = '#9a8f8f'; ctx.fillRect(sx - 22, sy - 18, 44, 44);
-    ctx.fillStyle = '#ffefef'; ctx.fillRect(sx - 6, sy - 8, 12, 12);
-    if(c.state === 'track' && c.target){
-      ctx.strokeStyle = 'rgba(255,120,120,0.95)'; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo((c.target.x - camLeftWorldX), c.target.y - 8); ctx.stroke();
-    } else if(c.state === 'lock' && c.target){
-      ctx.strokeStyle = 'rgba(255,40,40,1)'; ctx.lineWidth = 3;
-      ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo((c.target.x - camLeftWorldX), c.target.y - 8); ctx.stroke();
-    } else if(c.lastFired && performance.now() - c.lastFired < 400){
-      const sxReal = sx, syReal = sy;
-      const tx = (c.target ? (c.target.x - camLeftWorldX) : (PLAYER.screenX));
-      const ty = (c.target ? (c.target.y - 8) : (PLAYER.y - 8));
-      ctx.strokeStyle = 'rgba(255,20,20,0.95)'; ctx.lineWidth = 8;
-      ctx.beginPath(); ctx.moveTo(sxReal, syReal); ctx.lineTo(tx + (tx - sxReal)*6, ty + (ty - syReal)*6); ctx.stroke();
+  // dungeons open
+  dungeons.slice().forEach(d=>{
+    if(!d.opened && Math.abs(PLAYER.x - d.x) < 48 && Math.abs(PLAYER.y - d.y) < 80){
+      d.opened = true;
+      const itemName = d.weapon || chooseDungeonWeapon();
+      if(!save.unlockedDungeonWeapons.includes(itemName)) save.unlockedDungeonWeapons.push(itemName);
+      addToInventory({name: itemName, type:'weapon', fromDungeon:true});
+      points += 80;
+      saveToStorage();
     }
   });
 
-  // draw projectiles
-  projectiles.forEach(p => {
-    const sx = p.x - camLeftWorldX;
-    if(sx < -200 || sx > canvas.width + 200) return;
-    ctx.fillStyle = '#fff'; ctx.fillRect(sx - 3, p.y - 3, 6, 6);
-  });
-
-  // draw player at center
-  const screenX = PLAYER.screenX;
-  const screenY = PLAYER.y - PLAYER.h/2 + 8;
-  let spriteKey = 'idleright';
-  if(PLAYER.state === 'idle') spriteKey = (PLAYER.facing === 'right') ? 'idleright' : 'idleleft';
-  else if(PLAYER.state === 'walk') {
-    const frame = PLAYER.animFrame % 2;
-    spriteKey = (frame === 1) ? ((PLAYER.facing === 'right') ? 'jumpwalk1' : 'jumpwalk1left') : ((PLAYER.facing === 'right') ? 'idleright' : 'idleleft');
-  } else if(PLAYER.state === 'jump') {
-    const frame = PLAYER.animFrame % 3;
-    spriteKey = (frame === 1) ? ((PLAYER.facing === 'right') ? 'jump2' : 'jump2left') : ((PLAYER.facing === 'right') ? 'jump3' : 'jump3left');
-  }
-  const img = SPRITES[spriteKey];
-  if(img && img.complete){
-    ctx.drawImage(img, screenX - PLAYER.w/2, screenY - PLAYER.h/2, PLAYER.w, PLAYER.h);
-  } else {
-    ctx.fillStyle = '#7dd3fc'; ctx.fillRect(screenX - PLAYER.w/2, screenY - PLAYER.h/2, PLAYER.w, PLAYER.h);
-  }
-
-  // HUD
-  ctx.fillStyle = '#000'; ctx.globalAlpha = 0.55; ctx.fillRect(10,10,260,56); ctx.globalAlpha = 1;
-  ctx.fillStyle = '#fff'; ctx.font = '18px monospace'; ctx.fillText('Time: ' + fmtTime(timer), 18, 32);
-  ctx.font = '12px monospace'; ctx.fillText('Pts: ' + Math.floor(points) + '  Coins: ' + save.coins + '  Runs: ' + (save.runs || 0), 18, 52);
+  ensureTerrainAroundCamera();
+  if(frameCount % 60 === 0) ensurePacing();
 }
 
-// ======= Shop UI =======
-const shopModal = document.getElementById('shopModal');
-const shopContent = document.getElementById('shopContent');
-const shopClose = document.getElementById('shopClose');
-shopClose.addEventListener('click', () => { shopModal.style.display = 'none'; startRun(); });
-
-function openShop(){
-  shopContent.innerHTML = '';
-  const header = document.createElement('div');
-  header.className = 'muted';
-  header.style.marginBottom = '8px';
-  header.innerHTML = `Run ended — Points: <strong>${Math.floor(points)}</strong>`;
-  shopContent.appendChild(header);
-
-  // Weapons found
-  const wTitle = document.createElement('div'); wTitle.innerHTML = '<strong>Weapons (found)</strong>'; wTitle.style.marginTop = '8px';
-  shopContent.appendChild(wTitle);
-  const weaponsList = document.createElement('div');
-  weaponsList.style.marginBottom = '8px';
-  if((save.unlockedDungeonWeapons || []).length === 0){
-    const p = document.createElement('div'); p.className = 'muted'; p.textContent = 'No weapons discovered yet.'; weaponsList.appendChild(p);
-  } else {
-    save.unlockedDungeonWeapons.forEach(w => {
-      const row = document.createElement('div'); row.className = 'shop-row';
-      row.innerHTML = `<div style="font-weight:700">${w}</div><div><strong>150</strong> <button class="btn buyW" data-w="${w}">Buy</button></div>`;
-      weaponsList.appendChild(row);
-    });
-  }
-  shopContent.appendChild(weaponsList);
-
-  // Upgrades
-  const upTitle = document.createElement('div'); upTitle.innerHTML = '<strong>Upgrades</strong>'; shopContent.appendChild(upTitle);
-  const upList = document.createElement('div');
-  upList.style.marginBottom = '8px';
-  const upSpeed = document.createElement('div'); upSpeed.className = 'shop-row'; upSpeed.innerHTML = `<div>+0.5 Speed</div><div><strong>100</strong> <button id="buySpeed" class="btn">Buy</button></div>`;
-  const upPenalty = document.createElement('div'); upPenalty.className = 'shop-row'; upPenalty.innerHTML = `<div>Reduce hit penalty (5%)</div><div><strong>120</strong> <button id="buyPenalty" class="btn">Buy</button></div>`;
-  const upTime = document.createElement('div'); upTime.className = 'shop-row'; upTime.innerHTML = `<div>+15s Starting Time</div><div><strong>140</strong> <button id="buyTime" class="btn">Buy</button></div>`;
-  upList.appendChild(upSpeed); upList.appendChild(upPenalty); upList.appendChild(upTime);
-  shopContent.appendChild(upList);
-
-  // Utilities
-  const utilTitle = document.createElement('div'); utilTitle.innerHTML = '<strong>Utilities</strong>'; shopContent.appendChild(utilTitle);
-  const utilList = document.createElement('div'); utilList.style.marginBottom = '8px';
-  const magnet = document.createElement('div'); magnet.className = 'shop-row'; magnet.innerHTML = `<div>Coin Magnet (start-of-run)</div><div><strong>200</strong> <button id="buyMagnet" class="btn">Buy</button></div>`;
-  utilList.appendChild(magnet);
-  shopContent.appendChild(utilList);
-
-  // wire actions
-  shopContent.querySelectorAll('.buyW').forEach(b => {
-    b.addEventListener('click', () => {
-      const w = b.dataset.w;
-      if(save.coins >= 150){ save.coins -= 150; if(!save.permWeapons.includes(w)) save.permWeapons.push(w); save.equipped = w; saveToStorage(); openShop(); }
-      else alert('Not enough coins');
-    });
-  });
-  shopContent.querySelector('#buySpeed')?.addEventListener('click', () => {
-    if(save.coins >= 100){ save.coins -= 100; save.permSpeed = (save.permSpeed || 0) + 0.5; saveToStorage(); openShop(); } else alert('Not enough coins');
-  });
-  shopContent.querySelector('#buyPenalty')?.addEventListener('click', () => {
-    if(save.coins >= 120){ save.coins -= 120; save.timePenaltyReduction = (save.timePenaltyReduction || 0) + 0.05; saveToStorage(); openShop(); } else alert('Not enough coins');
-  });
-  shopContent.querySelector('#buyTime')?.addEventListener('click', () => {
-    if(save.coins >= 140){ save.coins -= 140; // increase BASE_TIME for this session persistently
-      // store extra time as permanent startingTimeBoost in save
-      save.startTimeBoost = (save.startTimeBoost || 0) + 15; saveToStorage(); openShop(); } else alert('Not enough coins');
-  });
-  shopContent.querySelector('#buyMagnet')?.addEventListener('click', () => {
-    if(save.coins >= 200){ save.coins -= 200; save.hasMagnet = true; saveToStorage(); openShop(); } else alert('Not enough coins');
-  });
-
-  shopModal.style.display = 'block';
-  shopModal.setAttribute('aria-hidden','false');
-}
-
-// ======= helpers for UI =======
-function updateUI(){
-  document.getElementById('timer').textContent = 'Time: ' + fmtTime(timer);
-  document.getElementById('meta').textContent = `Pts: ${Math.floor(points)} · Coins: ${save.coins} · Runs: ${save.runs || 0}`;
-}
-
-// ======= main loop bootstrap =======
+// ---------- RAF / TIMING ----------
+let accMs = 0;
+let lastRAF = performance.now();
 function raf(now){
-  const dt = now - lastRAF;
-  lastRAF = now;
-  accumulator += dt;
-  if(accumulator > 200) accumulator = 200;
-  while(accumulator >= FIXED_STEP){
-    fixedUpdate(FIXED_STEP);
-    accumulator -= FIXED_STEP;
-  }
-  render();
+  const dtMs = now - lastRAF; lastRAF = now;
+  accMs += dtMs;
+  const step = 16;
+  while(accMs >= step){ update(step); accMs -= step; }
+  draw();
   if(runActive) requestAnimationFrame(raf);
 }
 
-// Attach one master RAF reference variable (avoid duplicate)
-lastRAF = performance.now();
-accumulator = 0;
-
-// ======= Implement fixedUpdate (single source of truth) =======
-function fixedUpdate(dt){
-  if(!runActive) return;
-  // movement input
-  let moving = false;
-  const speedFactor = 1 + (save.permSpeed || 0);
-  if(keys['a'] || keys['arrowleft']){ PLAYER.worldX -= PLAYER.speed * speedFactor * (dt/16); PLAYER.facing = 'left'; moving = true; }
-  if(keys['d'] || keys['arrowright']){ PLAYER.worldX += PLAYER.speed * speedFactor * (dt/16); PLAYER.facing = 'right'; moving = true; }
-
-  // jump input (edge detection approximate: if vy==0 -> we consider on ground)
-  if((keys['w'] || keys['arrowup'] || keys[' ']) && PLAYER.vy === 0){
-    PLAYER.vy = JUMP_V;
-  }
-  // gravity & vertical
-  PLAYER.vy += GRAVITY * (dt/16);
-  PLAYER.y += PLAYER.vy * (dt/16);
-
-  // ground collision by sampling terrain at player.worldX
-  const ground = sampleTerrainY(PLAYER.worldX);
-  const targetY = ground - PLAYER.h/2 + 8;
-  if(PLAYER.y > targetY){
-    PLAYER.y = targetY; PLAYER.vy = 0;
-  }
-
-  // anim state
-  if(PLAYER.vy !== 0) PLAYER.state = 'jump';
-  else if(moving) PLAYER.state = 'walk';
-  else PLAYER.state = 'idle';
-  PLAYER.animTimer += dt;
-  if(PLAYER.animTimer > 110){ PLAYER.animTimer = 0; PLAYER.animFrame = (PLAYER.animFrame + 1) % 3; }
-
-  // cooldown and projectiles
-  if(attackCooldown > 0) attackCooldown = Math.max(0, attackCooldown - (dt/16));
-  updateProjectiles(dt);
-
-  // enemies update
-  for(const e of enemies){
-    const dx = PLAYER.worldX - e.worldX;
-    if(Math.abs(dx) < 700) e.worldX += Math.sign(dx) * e.speed * (dt/16);
-    else e.worldX += (Math.random() - 0.5) * 0.25;
-    e.y = sampleTerrainY(e.worldX) - 10;
-    if(Math.abs(e.worldX - PLAYER.worldX) < 28 && Math.abs(e.y - PLAYER.y) < 40){
-      applyHitPenalty(e.timePenalty);
-      e.worldX += (e.worldX < PLAYER.worldX ? -12 : 12);
-      lastEncounterTime = performance.now();
-    }
-  }
-
-  // cyclops
-  updateCyclopses(dt);
-
-  // item pickup handled
-  for(const it of items.slice()){
-    if(Math.abs(it.worldX - PLAYER.worldX) < 28 && Math.abs((it.y || sampleTerrainY(it.worldX)) - PLAYER.y) < 36){
-      if(it.type === 'money'){ save.coins += it.amount; points += it.amount; }
-      else if(it.type === 'dungeon-weapon' && !it.claimed){ it.claimed = true; if(!save.unlockedDungeonWeapons.includes(it.name)) save.unlockedDungeonWeapons.push(it.name); points += 30; }
-      items = items.filter(x => x !== it);
-      saveToStorage();
-    }
-  }
-
-  // ensure generation + pacing
-  ensureTerrainForWorldX(PLAYER.worldX);
-  if(Math.random() < 0.002) ensurePacing();
-
-  // decrease global timer per second handled by timerTick
-}
-
-// ======= Timer tick (1s) =======
-let timerTick = null;
+// ---------- TIMER ----------
+let timerTickInterval = null;
 function startTimerTick(){
-  if(timerTick) clearInterval(timerTick);
-  timerTick = setInterval(() => {
-    if(runActive){
-      timer = Math.max(0, timer - 1);
-      updateUI();
-      if(timer <= 0) endRun();
+  if(timerTickInterval) clearInterval(timerTickInterval);
+  timerTickInterval = setInterval(()=>{
+    if(runActive && !paused){
+      timerSeconds = Math.max(0, timerSeconds - 1);
+      updateHUD();
+      if(timerSeconds <= 0) { endRun(); }
     }
   }, 1000);
 }
 
-// ======= Apply hit penalty (time loss) =======
-function applyHitPenalty(secs){
-  const reduction = save.timePenaltyReduction || 0;
-  const pen = Math.max(2, Math.round(secs * (1 - reduction)));
-  timer = Math.max(0, timer - pen);
-  lastEncounterTime = performance.now();
+// ---------- DRAW ----------
+function draw(){
+  cameraX = PLAYER.x - canvas.width/2;
+
+  // background
+  ctx.fillStyle = '#6eaedb'; ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle = '#0b2a3a'; ctx.fillRect(0, canvas.height - 300, canvas.width, 300);
+
+  // terrain strips
+  for(let i=0;i<terrain.length;i++){
+    const t = terrain[i];
+    const sx = t.x - cameraX;
+    if(sx < -SAMPLE_W-400 || sx > canvas.width + SAMPLE_W + 400) continue;
+    let biome = getBiomeAtX(t.x);
+    let color = (biome==='desert') ? '#caa96a' : (biome==='snow')? '#dfeefb' : (biome==='volcano')? '#5a1f14' : '#2b6b3a';
+    ctx.fillStyle = color;
+    ctx.fillRect(sx, t.y, SAMPLE_W+1, canvas.height - t.y);
+    ctx.fillStyle = 'rgba(0,0,0,0.05)'; ctx.fillRect(sx+4, t.y+6, 2, 2);
+  }
+
+  // platforms
+  platforms.forEach(p=>{
+    const sx = p.x - cameraX;
+    if(sx < -200 || sx > canvas.width + 200) return;
+    ctx.fillStyle = '#7b5a3a'; ctx.fillRect(sx, p.y, p.w, p.h);
+  });
+
+  // dungeons
+  dungeons.forEach(d=>{
+    const sx = d.x - cameraX;
+    if(sx > -300 && sx < canvas.width + 300){
+      ctx.fillStyle = d.opened ? '#444' : '#ffd86b';
+      ctx.fillRect(sx-20, d.y, 40, 40);
+      if(!d.opened){ ctx.fillStyle='#000'; ctx.fillText('?', sx-4, d.y+26); }
+    }
+  });
+
+  // items (drops)
+  items.forEach(it=>{
+    const sx = it.x - cameraX;
+    if(sx < -200 || sx > canvas.width + 200) return;
+    if(it.type === 'money'){ ctx.fillStyle = '#ffd86b'; ctx.fillRect(sx-6, (it.y||sampleTerrainY(it.x))-18, 12, 12); }
+    else if(it.type === 'dungeon-weapon'){ ctx.fillStyle = '#ffd86b'; ctx.fillRect(sx-8, (it.y||sampleTerrainY(it.x))-22, 16, 14); ctx.fillStyle='#000'; ctx.fillText('W', sx-2, (it.y||sampleTerrainY(it.x))-10); }
+  });
+
+  // enemies (Scorpion)
+  enemies.forEach(e=>{
+    const sx = e.x - cameraX;
+    if(sx < -300 || sx > canvas.width + 300) return;
+    const key = 'scorpion' + (e.facing === 'right' ? 'right' : 'left');
+    const img = SPRITES[key];
+    if(img && img.complete){
+      ctx.drawImage(img, sx - e.w/2, e.y - e.h, e.w, e.h);
+    } else {
+      ctx.fillStyle = e.color || '#c38b3c';
+      ctx.fillRect(sx - e.w/2, e.y - e.h, e.w, e.h);
+    }
+    // HP bar
+    ctx.fillStyle = '#000'; ctx.fillRect(sx - e.w/2, e.y - e.h - 8, e.w, 5);
+    ctx.fillStyle = '#ff6b6b'; ctx.fillRect(sx - e.w/2, e.y - e.h - 8, e.w * clamp(e.hp / (e.maxHp || 16), 0, 1), 5);
+  });
+
+  // cyclops
+  cyclopses.forEach(c=>{
+    const sx = c.x - cameraX, sy = c.y - 24;
+    if(sx < -600 || sx > canvas.width + 600) return;
+    c.facing = (PLAYER.x > c.x) ? 'right' : 'left';
+    const key = 'cyclops' + (c.facing === 'right' ? 'right' : 'left');
+    const img = SPRITES[key];
+    const cw = ENEMY_DEFS.Cyclops.w, ch = ENEMY_DEFS.Cyclops.h;
+    if(img && img.complete){
+      ctx.drawImage(img, sx - cw/2, sy - ch/2, cw, ch);
+    } else {
+      ctx.fillStyle = '#9a8f8f'; ctx.fillRect(sx-22, sy-18, 44, 44);
+      ctx.fillStyle = '#ffefef'; ctx.fillRect(sx-6, sy-8, 12, 12);
+    }
+    // HP bar
+    ctx.fillStyle = '#000'; ctx.fillRect(sx - cw/2, sy - ch/2 - 12, cw, 6);
+    ctx.fillStyle = '#ff6b6b'; ctx.fillRect(sx - cw/2, sy - ch/2 - 12, cw * clamp(c.hp / (c.maxHp || ENEMY_DEFS.Cyclops.hp), 0, 1), 6);
+
+    // telegraph lines for track/lock/beam (visual)
+    if(c.state === 'track' && c.target){ ctx.strokeStyle = 'rgba(255,120,120,0.95)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(PLAYER.x - cameraX, PLAYER.y - 8); ctx.stroke(); }
+    else if(c.state === 'lock' && c.target){ ctx.strokeStyle = 'rgba(255,40,40,1)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(c.target.x - cameraX, c.target.y - 8); ctx.stroke(); }
+    else if(c.lastFired && performance.now() - c.lastFired < 400){
+      const sxReal = sx, syReal = sy;
+      const tx = (c.target ? (c.target.x - cameraX) : (PLAYER.x - cameraX));
+      const ty = (c.target ? (c.target.y - 8) : (PLAYER.y - 8));
+      ctx.strokeStyle = 'rgba(255,20,20,0.95)'; ctx.lineWidth = 8;
+      ctx.beginPath();
+      // draw beam extended visually
+      ctx.moveTo(sxReal, syReal);
+      const ex = tx + (tx - sxReal)*6;
+      const ey = ty + (ty - syReal)*6;
+      ctx.lineTo(ex, ey);
+      ctx.stroke();
+    }
+  });
+
+  // projectiles
+  projectiles.forEach(p=>{
+    const sx = p.x - cameraX;
+    if(sx < -800 || sx > canvas.width + 800) return;
+    if(p.owner === 'player'){
+      // small white projectile
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(sx-4, p.y-4, 8, 8);
+    } else if(p.owner === 'cyclops'){
+      // block projectile
+      ctx.fillStyle = '#8b8b8b';
+      ctx.fillRect(sx-10, p.y-10, 20, 20);
+      // shadow/trail
+      ctx.fillStyle = 'rgba(0,0,0,0.2)';
+      ctx.fillRect(sx-10, p.y+10, 20, 3);
+    }
+  });
+
+  // player
+  const screenX = canvas.width/2;
+  const screenY = PLAYER.y - PLAYER.h/2 + 8;
+  const img = SPRITES[(PLAYER.state === 'idle') ? (PLAYER.facing==='right'?'idleright':'idleleft') : (PLAYER.state==='walk' ? (PLAYER.facing==='right' ? 'jumpwalk1' : 'jumpwalk1left') : (PLAYER.facing==='right' ? 'jump2' : 'jump2left'))];
+  if(img && img.complete) ctx.drawImage(img, screenX - PLAYER.w/2, screenY - PLAYER.h/2, PLAYER.w, PLAYER.h);
+  else { ctx.fillStyle = '#7dd3fc'; ctx.fillRect(screenX - PLAYER.w/2, screenY - PLAYER.h/2, PLAYER.w, PLAYER.h); }
+
+  updateHUD();
 }
 
-// ======= Ensure terrain wrapper (calls generator) =======
-function ensureTerrainForWorldX(worldX){
-  const needIndex = Math.floor((worldX + GENERATE_AHEAD) / SAMPLE_W);
-  while(world.generatedMaxIndex < needIndex){
-    generateChunk(world.generatedMaxIndex + 1);
+// ---------- ANIMATION TIMER ----------
+setInterval(()=>{ if(!runActive || paused) return; PLAYER.animTimer++; if(PLAYER.animTimer>10){ PLAYER.animFrame=(PLAYER.animFrame+1); PLAYER.animTimer=0; } }, 1000/12);
+
+// ---------- SHOP UI ----------
+const shopOverlay = document.getElementById('shopOverlay');
+const shopContent = document.getElementById('shopContent');
+const shopClose = document.getElementById('shopClose');
+shopClose.onclick = ()=>{ shopOverlay.style.display='none'; shopOverlay.setAttribute('aria-hidden','true'); startRun(); };
+
+function openShopOverlay(){
+  shopContent.innerHTML = '';
+  const p = document.createElement('div'); p.className='muted'; p.innerHTML = `<div style="margin-bottom:8px">Run ended — Points: <strong>${Math.floor(points)}</strong></div>`; shopContent.appendChild(p);
+
+  const title = document.createElement('div'); title.innerHTML = '<strong>Dungeon Weapons (unlocked)</strong>'; shopContent.appendChild(title);
+  if((save.unlockedDungeonWeapons||[]).length === 0){
+    const none = document.createElement('div'); none.className='muted'; none.textContent='You have not discovered weapons yet.'; shopContent.appendChild(none);
+  } else {
+    save.unlockedDungeonWeapons.forEach(w=>{
+      const row = document.createElement('div'); row.className='shop-row';
+      row.innerHTML = `<div>${w}</div><div><strong>150</strong> <button class="btn buyW" data-w="${w}">Buy</button></div>`;
+      shopContent.appendChild(row);
+    });
   }
-  // cleanup old samples behind
-  const keepFrom = Math.floor((PLAYER.worldX - KEEP_BEHIND) / SAMPLE_W);
-  for(const k of Array.from(world.samples.keys())){
-    if(k < keepFrom) world.samples.delete(k);
-  }
+
+  const upTitle = document.createElement('div'); upTitle.style.marginTop='8px'; upTitle.innerHTML = '<strong>Permanent Upgrades & Time</strong>'; shopContent.appendChild(upTitle);
+  const spd = document.createElement('div'); spd.className='shop-row';
+  spd.innerHTML = `<div>+0.5 Speed</div><div><strong>100</strong> <button id="buySpeed" class="btn">Buy</button></div>`;
+  shopContent.appendChild(spd);
+  const pen = document.createElement('div'); pen.className='shop-row';
+  pen.innerHTML = `<div>Reduce hit penalty (5%)</div><div><strong>120</strong> <button id="buyPenalty" class="btn">Buy</button></div>`;
+  shopContent.appendChild(pen);
+
+  const timeRow = document.createElement('div'); timeRow.className='shop-row';
+  timeRow.innerHTML = `<div>Add time to runs (1 minute = 100 coins). Current permanent time add: <strong>${Math.round((save.timePurchase||0)/60)}m</strong></div><div><strong>100</strong> <button id="buyTime" class="btn">Buy 1m</button></div>`;
+  shopContent.appendChild(timeRow);
+
+  shopContent.querySelectorAll('.buyW').forEach(b=>{
+    b.onclick = ()=>{ const name = b.dataset.w; if(save.permMoney >= 150){ save.permMoney -= 150; if(!save.permWeapons.includes(name)) save.permWeapons.push(name); save.equipped = name; saveToStorage(); openShopOverlay(); } else alert('Not enough coins'); };
+  });
+  document.getElementById('buySpeed').onclick = ()=>{ if(save.permMoney >= 100){ save.permMoney -= 100; save.permSpeed = (save.permSpeed||0)+0.5; saveToStorage(); openShopOverlay(); } else alert('Not enough coins'); };
+  document.getElementById('buyPenalty').onclick = ()=>{ if(save.permMoney >= 120){ save.permMoney -= 120; save.timePenaltyReduction = (save.timePenaltyReduction||0)+0.05; saveToStorage(); openShopOverlay(); } else alert('Not enough coins'); };
+  document.getElementById('buyTime').onclick = ()=>{ if(save.permMoney >= 100){
+    if((save.timePurchase||0) + 60 <= MAX_TIME_SECONDS - START_TIME_SECONDS){
+      save.permMoney -= 100; save.timePurchase = (save.timePurchase||0) + 60; saveToStorage(); openShopOverlay();
+    } else alert('Cannot buy more time (max total ' + (MAX_TIME_SECONDS/60) + ' minutes).');
+  } else alert('Not enough coins'); };
+
+  shopOverlay.style.display = 'block';
+  shopOverlay.setAttribute('aria-hidden','false');
 }
 
-// ======= Rendering helper & main render wrapper set earlier =======
-// render() already defined above
-
-// ======= Game flow: start and end =======
-function startGame(){
-  // reset world and entities
-  world.samples.clear(); world.chunks = []; world.generatedMaxIndex = -1; world.maxIndex = -1;
-  enemies = []; cyclopses = []; projectiles = []; items = []; dungeons = [];
-  points = 0; timer = BASE_TIME + (save.startTimeBoost || 0); runActive = true; lastEncounterTime = performance.now();
-  PLAYER.worldX = 400; PLAYER.screenX = Math.floor(canvas.width / 2);
-  PLAYER.y = sampleTerrainY(PLAYER.worldX) - PLAYER.h/2 + 8; PLAYER.vy = 0; PLAYER.equipped = save.equipped || 'Stick';
-  save.runs = save.runs || 0; saveToStorage();
-  ensureTerrainForWorldX(PLAYER.worldX);
+// ---------- RUN CONTROL ----------
+function startRun(){
+  terrain = []; platforms = []; dungeons = []; enemies = []; cyclopses = []; items = []; projectiles = []; chunks = [];
+  generatedXEnd = 0; generatedXStart = 0;
+  PLAYER.x = 500; PLAYER.y = canvas.height - 160; PLAYER.vy = 0; PLAYER.onGround = true;
+  PLAYER.inventory = []; PLAYER.slot = 0;
+  points = 0;
+  timerSeconds = START_TIME_SECONDS + (save.timePurchase||0);
+  runActive = true; paused = false; lastEncounterTime = performance.now();
+  save.runs = (save.runs||0);
+  saveToStorage();
+  ensureTerrainAroundCamera();
   startTimerTick();
   lastRAF = performance.now();
   requestAnimationFrame(raf);
 }
+
 function endRun(){
   runActive = false;
-  if(timerTick) clearInterval(timerTick);
-  save.runs = (save.runs || 0) + 1; saveToStorage();
-  openShop();
+  if(timerTickInterval) clearInterval(timerTickInterval);
+  save.runs = (save.runs||0) + 1;
+  saveToStorage();
+  openShopOverlay();
 }
 
-// ======= UI / Shop triggers =======
-function openShop(){
-  // pause everything
-  shopModal.style.display = 'block';
-  shopModal.setAttribute('aria-hidden','false');
-  // fill content (function defined earlier)
-  openShopContent();
-}
-function openShopContent(){
-  openShop(); // we already use openShop as modal opener above; this small wrapper is harmless
+// ---------- HELPERS ----------
+function spawnCyclopsNear(xMin, xMax){
+  spawnCyclopsAt(PLAYER.x + rint(xMin, xMax), sampleTerrainY(PLAYER.x + rint(xMin, xMax)) - 60, false);
 }
 
-// Avoid recursion above: implement proper shop fill function and call it:
-function openShop(){
-  shopContent.innerHTML = '';
-  const info = document.createElement('div'); info.className='muted'; info.style.marginBottom = '8px';
-  info.innerHTML = `Run ended — Points: <strong>${Math.floor(points)}</strong>`;
-  shopContent.appendChild(info);
+function exportSave(){ const data = JSON.stringify(save, null, 2); const blob = new Blob([data], {type:'application/json'}); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'chronorun_save.json'; a.click(); URL.revokeObjectURL(url); }
+function importSave(){ const input = document.createElement('input'); input.type='file'; input.accept='application/json'; input.onchange = e => { const f = e.target.files[0]; if(!f) return; const r = new FileReader(); r.onload = ev => { try{ save = JSON.parse(ev.target.result); saveToStorage(); alert('Save imported'); } catch(err){ alert('Invalid file'); } }; r.readAsText(f); }; input.click(); }
 
-  // Weapons (found)
-  const wtitle = document.createElement('div'); wtitle.innerHTML = '<strong>Weapons (found)</strong>'; shopContent.appendChild(wtitle);
-  const wlist = document.createElement('div');
-  if((save.unlockedDungeonWeapons || []).length === 0){
-    const p = document.createElement('div'); p.className = 'muted'; p.textContent = 'No weapons discovered.'; wlist.appendChild(p);
-  } else {
-    save.unlockedDungeonWeapons.forEach(w => {
-      const row = document.createElement('div'); row.className = 'shop-row';
-      row.innerHTML = `<div style="font-weight:700">${w}</div><div><strong>150</strong> <button class="btn buyW" data-w="${w}">Buy</button></div>`;
-      wlist.appendChild(row);
-    });
-  }
-  shopContent.appendChild(wlist);
-
-  // Upgrades
-  const utitle = document.createElement('div'); utitle.innerHTML = '<strong>Upgrades</strong>'; utitle.style.marginTop = '8px'; shopContent.appendChild(utitle);
-  const ulist = document.createElement('div');
-  const s1 = document.createElement('div'); s1.className='shop-row'; s1.innerHTML = `<div>+0.5 Speed</div><div><strong>100</strong> <button id="buySpeed" class="btn">Buy</button></div>`;
-  const s2 = document.createElement('div'); s2.className='shop-row'; s2.innerHTML = `<div>Reduce hit penalty (5%)</div><div><strong>120</strong> <button id="buyPenalty" class="btn">Buy</button></div>`;
-  const s3 = document.createElement('div'); s3.className='shop-row'; s3.innerHTML = `<div>+15s Starting Time</div><div><strong>140</strong> <button id="buyTime" class="btn">Buy</button></div>`;
-  ulist.appendChild(s1); ulist.appendChild(s2); ulist.appendChild(s3);
-  shopContent.appendChild(ulist);
-
-  // Utilities
-  const utilTitle = document.createElement('div'); utilTitle.innerHTML = '<strong>Utilities</strong>'; utilTitle.style.marginTop = '8px'; shopContent.appendChild(utilTitle);
-  const utilList = document.createElement('div'); const mrow = document.createElement('div'); mrow.className='shop-row'; mrow.innerHTML = `<div>Coin Magnet</div><div><strong>200</strong> <button id="buyMagnet" class="btn">Buy</button></div>`; utilList.appendChild(mrow);
-  shopContent.appendChild(utilList);
-
-  // wire actions
-  shopContent.querySelectorAll('.buyW').forEach(b => {
-    b.addEventListener('click', () => { const w = b.dataset.w; if(save.coins >= 150){ save.coins -= 150; if(!save.permWeapons.includes(w)) save.permWeapons.push(w); save.equipped = w; saveToStorage(); openShop(); } else alert('Not enough coins'); });
-  });
-  shopContent.querySelector('#buySpeed')?.addEventListener('click', () => { if(save.coins >= 100){ save.coins -= 100; save.permSpeed = (save.permSpeed || 0) + 0.5; saveToStorage(); openShop(); } else alert('Not enough coins'); });
-  shopContent.querySelector('#buyPenalty')?.addEventListener('click', () => { if(save.coins >= 120){ save.coins -= 120; save.timePenaltyReduction = (save.timePenaltyReduction || 0) + 0.05; saveToStorage(); openShop(); } else alert('Not enough coins'); });
-  shopContent.querySelector('#buyTime')?.addEventListener('click', () => { if(save.coins >= 140){ save.coins -= 140; save.startTimeBoost = (save.startTimeBoost || 0) + 15; saveToStorage(); openShop(); } else alert('Not enough coins'); });
-  shopContent.querySelector('#buyMagnet')?.addEventListener('click', () => { if(save.coins >= 200){ save.coins -= 200; save.hasMagnet = true; saveToStorage(); openShop(); } else alert('Not enough coins'); });
-
-  shopModal.style.display = 'block';
-  shopModal.setAttribute('aria-hidden', 'false');
+// ---------- HUD ----------
+const hudDiv = document.getElementById('hud');
+function updateHUD(){
+  const remaining = Math.max(0, Math.floor(timerSeconds));
+  const dist = Math.floor(Math.abs(PLAYER.x));
+  const invNames = PLAYER.inventory.map((it,i)=> (i===PLAYER.slot?`[${it.name}]`:it.name)).slice(0,3);
+  while(invNames.length < 3) invNames.push('—');
+  const current = PLAYER.inventory[PLAYER.slot] ? PLAYER.inventory[PLAYER.slot].name : (PLAYER.equipped || 'Stick');
+  hudDiv.textContent =
+    `Pts: ${Math.floor(points)}  Coins: ${save.permMoney}\n` +
+    `Dist: ${dist} px\n` +
+    `Time: ${fmtTime(remaining)}\n` +
+    `Equipped: ${current}\n` +
+    `Inv: ${invNames.join(' | ')}\n` +
+    `Runs: ${save.runs||0}`;
 }
 
-// ======= Begin game =======
-updateUI();
-startGame();
+// ---------- BOOTSTRAP ----------
+function init(){
+  ensureTerrainAroundCamera();
+  updateHUD();
+  startRun();
+}
+init();
 
-// Expose some useful debug helpers in window for testing
+// expose
+window._exportSave = exportSave;
+window._importSave = importSave;
 window._save = save;
-window._start = startGame;
-window._end = endRun;
-window._export = () => { const data = JSON.stringify(save, null, 2); const blob = new Blob([data], {type:'application/json'}); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'timerunner_save.json'; a.click(); URL.revokeObjectURL(url); };
+window._spawnCyclopsNear = spawnCyclopsNear;
 
 </script>
 </body>
