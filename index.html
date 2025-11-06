@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>ChronoRun — Scorpion & Cyclops (HP + Weapons)</title>
+<title>ChronoRun — Scorpion & Cyclops (HP + Weapons) — Cleaned Full Build</title>
 <style>
   :root{--bg:#0b1420;--panel:#081827cc;--accent:#7dd3fc}
   html,body{height:100%;margin:0;background:var(--bg);font-family:system-ui,Segoe UI,Roboto,Arial;color:#e6eef6}
@@ -21,6 +21,7 @@
   .shop-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.03)}
   button.btn{background:linear-gradient(#0b72a1,#065a85);color:white;border:none;padding:8px 10px;border-radius:6px;cursor:pointer;font-weight:700}
   .muted{color:#9aa7b2;font-size:13px}
+  h2{margin:0 0 8px 0}
 </style>
 </head>
 <body>
@@ -38,14 +39,12 @@
 </div>
 
 <script>
-/* ChronoRun — Full single-file game
-   Mod changes applied:
-   - Cyclops spawn more often
-   - Scorpion & Cyclops are larger (increased SCALE)
-   - Ranged enemies spawn a "block projectile" when they attack (Cyclops)
-   - Melee enemies (Scorpion) do not shoot projectiles
-   - Player can attack with left mouse click (in addition to 'z')
-   - Completed Cyclops beam draw and cleaned up code
+/* ChronoRun — Cleaned Full single-file game
+   - Preserves all sprite filenames and visuals.
+   - Points are now the primary, persistent currency (carried across runs).
+   - Shop buy buttons use points (instead of permMoney/coins).
+   - Backwards-compatible: if old saves had permMoney, they are migrated to points.
+   - Cleaned structure, improved save handling, small bug fixes.
 */
 
 // ---------- CANVAS SETUP ----------
@@ -65,31 +64,37 @@ const JUMP_V = -14;
 const START_TIME_SECONDS = 60;
 const MAX_TIME_SECONDS = 300;
 const PACE_MAX_SECONDS = 20;
-const CYCL_TRACK_MS = 1200; // slightly faster tracking
+const CYCL_TRACK_MS = 1200;
 const CYCL_LOCK_MS = 450;
 const CYCL_COOLDOWN_MS = 2200;
 const SAVE_KEY = 'chronorun_full_save_v1';
-const SCALE = 1.35; // increased scale (+ bigger scorpion & cyclops)
+const SCALE = 1.35;
 
-// ---------- STORAGE ----------
+// ---------- SAVE / STORAGE ----------
 let save = loadSave();
 function loadSave(){
   try{
     const raw = localStorage.getItem(SAVE_KEY);
     if(raw){
       const p = JSON.parse(raw);
-      p.permWeapons = p.permWeapons||[];
-      p.unlockedDungeonWeapons = p.unlockedDungeonWeapons||[];
-      p.permMoney = p.permMoney||0;
-      p.permSpeed = p.permSpeed||0;
-      p.runs = p.runs||0;
-      p.equipped = p.equipped||'Stick';
-      p.timePurchase = p.timePurchase||0;
-      p.timePenaltyReduction = p.timePenaltyReduction||0;
+      // migrate older fields to new shape and ensure defaults
+      p.permWeapons = p.permWeapons || [];
+      p.unlockedDungeonWeapons = p.unlockedDungeonWeapons || [];
+      // points is canonical currency; if old permMoney present, migrate it
+      if(p.points === undefined && p.permMoney !== undefined) p.points = p.permMoney;
+      p.points = p.points || 0;
+      p.permSpeed = p.permSpeed || 0;
+      p.runs = p.runs || 0;
+      p.equipped = p.equipped || 'Stick';
+      p.timePurchase = p.timePurchase || 0;
+      p.timePenaltyReduction = p.timePenaltyReduction || 0;
       return p;
     }
   }catch(e){ console.warn('load save fail', e); }
-  return {permWeapons:[], unlockedDungeonWeapons:[], permMoney:0, permSpeed:0, runs:0, equipped:'Stick', timePurchase:0, timePenaltyReduction:0};
+  return {
+    permWeapons: [], unlockedDungeonWeapons: [], points:0, permSpeed:0, runs:0, equipped:'Stick',
+    timePurchase:0, timePenaltyReduction:0
+  };
 }
 function saveToStorage(){ localStorage.setItem(SAVE_KEY, JSON.stringify(save)); }
 
@@ -104,7 +109,8 @@ const SPRITE_FILES = {
 };
 const SPRITES = {};
 for(const k in SPRITE_FILES){
-  const img = new Image(); img.src = SPRITE_FILES[k];
+  const img = new Image();
+  img.src = SPRITE_FILES[k];
   img.onload = ()=>{ SPRITES[k]=img; };
   img.onerror = ()=>{ SPRITES[k]=null; };
 }
@@ -114,13 +120,13 @@ let cameraX = 0;
 let terrain = [];
 let platforms = [];
 let dungeons = [];
-let enemies = [];      // Scorpion enemies only
-let cyclopses = [];    // Cyclops special enemies
-let projectiles = [];  // includes player projectiles and cyclops block projectiles
+let enemies = [];
+let cyclopses = [];
+let projectiles = [];
 let items = [];
 let chunks = [];
 
-let points = 0;
+let points = save.points || 0;           // persistent across runs (mirrors save.points)
 let timerSeconds = START_TIME_SECONDS + (save.timePurchase||0);
 let runActive = false;
 let paused = false;
@@ -211,12 +217,12 @@ function generateChunk(startX){
       const ey = y - 10;
       spawnEnemy('Scorpion', ex, ey);
     }
-    // increased chance for cyclops in chunk generation (more often)
-    if(Math.random() < 0.018 && biome === 'mountain'){ // higher on mountains
+    // cyclops spawn (increased chance overall; higher on mountains)
+    if(Math.random() < 0.018 && biome === 'mountain'){
       const cx = px + rint(120, SAMPLE_W*6);
       const cy = y - rint(40,120);
       spawnCyclopsAt(cx, cy, true);
-    } else if(Math.random() < 0.006){ // rarer elsewhere but more overall
+    } else if(Math.random() < 0.006){
       const cx2 = px + rint(120, SAMPLE_W*6);
       const cy2 = y - rint(30,90);
       spawnCyclopsAt(cx2, cy2, false);
@@ -232,10 +238,7 @@ const ENEMY_DEFS = {
   Cyclops:  {w: Math.round(92 * SCALE), h: Math.round(92 * SCALE), color:'#9a8f8f', hp: 90, speed:0.14, timePenalty:14, reward:360}
 };
 
-// choose enemy - now only scorpion as base
-function chooseEnemyForBiome(b){
-  return 'Scorpion';
-}
+function chooseEnemyForBiome(b){ return 'Scorpion'; }
 function spawnEnemy(type, x, y){
   const def = ENEMY_DEFS[type] || ENEMY_DEFS.Scorpion;
   enemies.push({
@@ -245,7 +248,7 @@ function spawnEnemy(type, x, y){
   });
 }
 
-// cyclops spawn (tougher, retains attack pattern)
+// cyclops spawn
 function spawnCyclopsAt(x, y, inMountain=false){
   const def = ENEMY_DEFS.Cyclops;
   cyclopses.push({
@@ -258,12 +261,12 @@ function spawnCyclopsAt(x, y, inMountain=false){
 function chooseDungeonWeapon(){ const pool = ['Wooden Sword','Iron Sword','Ice Dagger','Great Axe','Fire Staff','Laser Wand','Magic Wand','Bow']; return pool[rint(0,pool.length-1)]; }
 
 function pickUpItemWorld(it){
-  if(it.type === 'money'){ save.permMoney += it.amount; points += it.amount; }
+  if(it.type === 'money'){ awardPoints(it.amount); }
   else if(it.type === 'dungeon-weapon' && !it.claimed){
     it.claimed = true;
     if(!save.unlockedDungeonWeapons.includes(it.name)) save.unlockedDungeonWeapons.push(it.name);
     addToInventory({name: it.name, type:'weapon', fromDungeon:true});
-    points += 30;
+    awardPoints(30);
   }
   saveToStorage();
 }
@@ -273,6 +276,12 @@ function addToInventory(item){
   PLAYER.inventory.push(item);
   if(PLAYER.inventory.length > 3) PLAYER.inventory.shift();
   if(!PLAYER.equipped && item.type === 'weapon') PLAYER.equipped = item.name;
+}
+
+function awardPoints(n){
+  points += n;
+  save.points = points;
+  saveToStorage();
 }
 
 // ---------- WEAPONS & COMBAT ----------
@@ -289,7 +298,6 @@ const WEAPONS = {
 };
 let attackCooldown = 0;
 
-// Player attack uses weapon in slot or equipped -> damages enemies (Scorpion) and cyclopses
 function playerAttack(){
   const eq = PLAYER.inventory[PLAYER.slot] ? PLAYER.inventory[PLAYER.slot].name : (PLAYER.equipped || 'Stick');
   const w = WEAPONS[eq] || WEAPONS['Stick'];
@@ -297,10 +305,8 @@ function playerAttack(){
   attackCooldown = w.cd;
   const dir = PLAYER.facing === 'left' ? -1 : 1;
   if(w.projectile){
-    // spawn a player projectile block
     projectiles.push({x: PLAYER.x + dir*36, y: PLAYER.y - 12, vx: dir * (w.speed || 10), vy: 0, dmg: w.dmg, life: w.range, owner:'player', type:'projectile'});
   } else {
-    // melee hit
     const r = w.range;
     const minX = PLAYER.x + (dir>0 ? 0 : -r);
     const maxX = PLAYER.x + (dir>0 ? r : 0);
@@ -318,13 +324,12 @@ function playerAttack(){
   }
 }
 
-// projectile update and collision (player + cyclops 'block' projectiles)
+// projectile updates
 function updateProjectiles(dt){
   projectiles.slice().forEach(p=>{
     p.x += (p.vx || 0) * (dt/16);
     p.y += (p.vy || 0) * (dt/16);
     p.life = (p.life === undefined) ? 99999 : p.life - Math.abs(p.vx) * (dt/16);
-    // collisions with enemies
     if(p.owner === 'player'){
       enemies.slice().forEach(e=>{
         if(Math.abs(p.x - e.x) < e.w/2 + 12 && Math.abs(p.y - e.y) < e.h/2 + 12){
@@ -335,13 +340,10 @@ function updateProjectiles(dt){
         if(Math.abs(p.x - c.x) < 36 && Math.abs(p.y - c.y) < 36){ c.hp -= p.dmg; projectiles = projectiles.filter(pp=>pp!==p); if(c.hp<=0) onCyclopsKill(c); }
       });
     } else if(p.owner === 'cyclops'){
-      // cyclops block projectile hits player
       if(Math.abs(p.x - PLAYER.x) < PLAYER.w/2 + 12 && Math.abs(p.y - PLAYER.y) < PLAYER.h/2 + 12){
-        // apply time penalty effect (like being hit)
         const reduction = save.timePenaltyReduction || 0;
-        const pen = Math.max(2, Math.round((14) * (1 - reduction))); // cyclops hit penalty
+        const pen = Math.max(2, Math.round((14) * (1 - reduction)));
         timerSeconds = Math.max(0, timerSeconds - pen);
-        // knockback
         if(p.x < PLAYER.x) PLAYER.x += 18; else PLAYER.x -= 18;
         projectiles = projectiles.filter(pp=>pp!==p);
         lastEncounterTime = performance.now();
@@ -354,19 +356,23 @@ function updateProjectiles(dt){
 // ---------- ON KILL ----------
 function onEnemyKill(e){
   enemies = enemies.filter(x=>x!==e);
-  points += e.reward || 30;
-  save.permMoney += Math.max(4, Math.floor((e.reward || 20)/2));
+  const reward = e.reward || 30;
+  awardPoints(Math.max(4, Math.floor(reward/2)));
+  points += Math.floor(reward/2); // duplicate small safety
+  // chance drops
   if(Math.random() < 0.14) items.push({type:'money', amount: rint(6,40), x: e.x, y: e.y});
   if(Math.random() < 0.06) items.push({type:'dungeon-weapon', name: chooseDungeonWeapon(), x: Math.floor(e.x), claimed:false});
   if(Math.random() < 0.25) timerSeconds = Math.min(timerSeconds + 1, START_TIME_SECONDS + (save.timePurchase||0));
   lastEncounterTime = performance.now();
-  saveToStorage();
+  save.points = points; saveToStorage();
 }
 function onCyclopsKill(c){
   cyclopses = cyclopses.filter(x=>x!==c);
   items.push({type:'dungeon-weapon', name:'Laser Wand', x: Math.floor(c.x), claimed:false});
-  save.permMoney += 80; points += 240; lastEncounterTime = performance.now();
-  saveToStorage();
+  awardPoints(80); // big reward
+  points += 240; // extra for scoreboard
+  lastEncounterTime = performance.now();
+  save.points = points; saveToStorage();
 }
 
 // ---------- HIT FROM ENEMY ----------
@@ -378,7 +384,7 @@ function enemyHitsPlayer(e){
   lastEncounterTime = performance.now();
 }
 
-// ---------- CYClops BEHAVIOR (tracking, beam attack, spawn block projectile) ----------
+// ---------- CYClops BEHAVIOR ----------
 function updateCyclopses(dt){
   const now = performance.now();
   cyclopses.slice().forEach(c=>{
@@ -386,15 +392,12 @@ function updateCyclopses(dt){
     const dist = Math.hypot(PLAYER.x - c.x, PLAYER.y - c.y);
     if(c.state === 'idle'){
       if(dist < 1600) c.x += (PLAYER.x > c.x ? ENEMY_DEFS.Cyclops.speed : -ENEMY_DEFS.Cyclops.speed) * (dt/16);
-      // slightly higher chance to start tracking when player is near
       if(dist < 700 && Math.random() < 0.012) { c.state = 'track'; c.stateStart = now; c.target = {x: PLAYER.x, y: PLAYER.y}; }
     } else if(c.state === 'track'){
       c.target = {x: PLAYER.x, y: PLAYER.y};
       if(now - c.stateStart >= CYCL_TRACK_MS) { c.state = 'lock'; c.stateStart = now; }
     } else if(c.state === 'lock'){
       if(now - c.stateStart >= CYCL_LOCK_MS){
-        // Instead of a pure instant beam hit only, we also spawn a "block projectile" that travels to the target.
-        // Keep beam visuals for telegraph, but spawn projectile that can hit player and be dodged.
         spawnCyclopsBlockProjectile(c, c.target || {x: PLAYER.x, y: PLAYER.y});
         c.lastFired = now; c.state = 'cooldown'; c.stateStart = now;
       }
@@ -411,7 +414,6 @@ function spawnCyclopsBlockProjectile(c, target){
   const speed = 9 + Math.random()*3;
   const vx = Math.cos(ang) * speed;
   const vy = Math.sin(ang) * speed;
-  // create visible block projectile that damages player/time when colliding
   projectiles.push({
     x: sx + Math.cos(ang)*24,
     y: sy + Math.sin(ang)*24,
@@ -419,11 +421,9 @@ function spawnCyclopsBlockProjectile(c, target){
     life: 1200,
     owner: 'cyclops',
     type: 'block',
-    dmg: 0 // dmg represented as time penalty
+    dmg: 0
   });
 }
-
-// keep old beam behavior for visual telegraph & area hitting enemies
 function fireCyclopsBeam(c, target){
   const sx = c.x, sy = c.y - 4;
   const tx = target.x, ty = target.y - 8;
@@ -456,13 +456,12 @@ function pointToLineDistance(px,py,x1,y1,x2,y2){
 // ---------- PACING ----------
 function ensurePacing(){
   if((performance.now() - lastEncounterTime) > (PACE_MAX_SECONDS*1000)){
-    const count = rint(3,6); // spawn more than before
+    const count = rint(3,6);
     for(let i=0;i<count;i++){
       const ex = PLAYER.x + rint(200, 520);
       const ey = sampleTerrainY(ex) - 10;
       spawnEnemy(chooseEnemyForBiome(getBiomeAtX(ex)), ex, ey);
     }
-    // much higher cyclops chance on pacing
     if(Math.random() < 0.75) spawnCyclopsAt(PLAYER.x + rint(240, 720), sampleTerrainY(PLAYER.x + 600) - rint(0,120), false);
     lastEncounterTime = performance.now();
   }
@@ -513,7 +512,7 @@ function update(dt){
   // attack (z)
   if(keys['z']){ playerAttack(); }
 
-  // inventory and drop
+  // inventory selection & drop
   if(keys['1']) PLAYER.slot = 0;
   if(keys['2']) PLAYER.slot = 1;
   if(keys['3']) PLAYER.slot = 2;
@@ -572,18 +571,18 @@ function update(dt){
     }
   });
 
-  // cyclops update (attack pattern retained, but now spawns "block" projectiles)
+  // cyclops
   updateCyclopses(dt);
 
   // pickups
   items.slice().forEach(it=>{
     if(Math.abs(it.x - PLAYER.x) < 28 && Math.abs((it.y||sampleTerrainY(it.x)) - PLAYER.y) < 40){
-      if(it.type === 'money'){ save.permMoney += it.amount; points += it.amount; }
+      if(it.type === 'money'){ awardPoints(it.amount); }
       else if(it.type === 'dungeon-weapon' && !it.claimed){
         it.claimed = true;
         if(!save.unlockedDungeonWeapons.includes(it.name)) save.unlockedDungeonWeapons.push(it.name);
         addToInventory({name: it.name, type:'weapon', fromDungeon:true});
-        points += 30;
+        awardPoints(30);
       }
       items = items.filter(x=>x!==it);
       saveToStorage();
@@ -597,7 +596,7 @@ function update(dt){
       const itemName = d.weapon || chooseDungeonWeapon();
       if(!save.unlockedDungeonWeapons.includes(itemName)) save.unlockedDungeonWeapons.push(itemName);
       addToInventory({name: itemName, type:'weapon', fromDungeon:true});
-      points += 80;
+      awardPoints(80);
       saveToStorage();
     }
   });
@@ -711,7 +710,7 @@ function draw(){
     ctx.fillStyle = '#000'; ctx.fillRect(sx - cw/2, sy - ch/2 - 12, cw, 6);
     ctx.fillStyle = '#ff6b6b'; ctx.fillRect(sx - cw/2, sy - ch/2 - 12, cw * clamp(c.hp / (c.maxHp || ENEMY_DEFS.Cyclops.hp), 0, 1), 6);
 
-    // telegraph lines for track/lock/beam (visual)
+    // telegraph lines
     if(c.state === 'track' && c.target){ ctx.strokeStyle = 'rgba(255,120,120,0.95)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(PLAYER.x - cameraX, PLAYER.y - 8); ctx.stroke(); }
     else if(c.state === 'lock' && c.target){ ctx.strokeStyle = 'rgba(255,40,40,1)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(c.target.x - cameraX, c.target.y - 8); ctx.stroke(); }
     else if(c.lastFired && performance.now() - c.lastFired < 400){
@@ -720,7 +719,6 @@ function draw(){
       const ty = (c.target ? (c.target.y - 8) : (PLAYER.y - 8));
       ctx.strokeStyle = 'rgba(255,20,20,0.95)'; ctx.lineWidth = 8;
       ctx.beginPath();
-      // draw beam extended visually
       ctx.moveTo(sxReal, syReal);
       const ex = tx + (tx - sxReal)*6;
       const ey = ty + (ty - syReal)*6;
@@ -734,14 +732,11 @@ function draw(){
     const sx = p.x - cameraX;
     if(sx < -800 || sx > canvas.width + 800) return;
     if(p.owner === 'player'){
-      // small white projectile
       ctx.fillStyle = '#fff';
       ctx.fillRect(sx-4, p.y-4, 8, 8);
     } else if(p.owner === 'cyclops'){
-      // block projectile
       ctx.fillStyle = '#8b8b8b';
       ctx.fillRect(sx-10, p.y-10, 20, 20);
-      // shadow/trail
       ctx.fillStyle = 'rgba(0,0,0,0.2)';
       ctx.fillRect(sx-10, p.y+10, 20, 3);
     }
@@ -790,19 +785,20 @@ function openShopOverlay(){
   shopContent.appendChild(pen);
 
   const timeRow = document.createElement('div'); timeRow.className='shop-row';
-  timeRow.innerHTML = `<div>Add time to runs (1 minute = 100 coins). Current permanent time add: <strong>${Math.round((save.timePurchase||0)/60)}m</strong></div><div><strong>100</strong> <button id="buyTime" class="btn">Buy 1m</button></div>`;
+  timeRow.innerHTML = `<div>Add time to runs (1 minute = 100 points). Current permanent time add: <strong>${Math.round((save.timePurchase||0)/60)}m</strong></div><div><strong>100</strong> <button id="buyTime" class="btn">Buy 1m</button></div>`;
   shopContent.appendChild(timeRow);
 
+  // hook up button logic (use points currency)
   shopContent.querySelectorAll('.buyW').forEach(b=>{
-    b.onclick = ()=>{ const name = b.dataset.w; if(save.permMoney >= 150){ save.permMoney -= 150; if(!save.permWeapons.includes(name)) save.permWeapons.push(name); save.equipped = name; saveToStorage(); openShopOverlay(); } else alert('Not enough coins'); };
+    b.onclick = ()=>{ const name = b.dataset.w; if(save.points >= 150){ save.points -= 150; save.points = Math.max(0, save.points); if(!save.permWeapons.includes(name)) save.permWeapons.push(name); save.equipped = name; points = save.points; saveToStorage(); openShopOverlay(); } else alert('Not enough points'); };
   });
-  document.getElementById('buySpeed').onclick = ()=>{ if(save.permMoney >= 100){ save.permMoney -= 100; save.permSpeed = (save.permSpeed||0)+0.5; saveToStorage(); openShopOverlay(); } else alert('Not enough coins'); };
-  document.getElementById('buyPenalty').onclick = ()=>{ if(save.permMoney >= 120){ save.permMoney -= 120; save.timePenaltyReduction = (save.timePenaltyReduction||0)+0.05; saveToStorage(); openShopOverlay(); } else alert('Not enough coins'); };
-  document.getElementById('buyTime').onclick = ()=>{ if(save.permMoney >= 100){
+  document.getElementById('buySpeed').onclick = ()=>{ if(save.points >= 100){ save.points -= 100; save.permSpeed = (save.permSpeed||0)+0.5; points = save.points; saveToStorage(); openShopOverlay(); } else alert('Not enough points'); };
+  document.getElementById('buyPenalty').onclick = ()=>{ if(save.points >= 120){ save.points -= 120; save.timePenaltyReduction = (save.timePenaltyReduction||0)+0.05; points = save.points; saveToStorage(); openShopOverlay(); } else alert('Not enough points'); };
+  document.getElementById('buyTime').onclick = ()=>{ if(save.points >= 100){
     if((save.timePurchase||0) + 60 <= MAX_TIME_SECONDS - START_TIME_SECONDS){
-      save.permMoney -= 100; save.timePurchase = (save.timePurchase||0) + 60; saveToStorage(); openShopOverlay();
+      save.points -= 100; save.timePurchase = (save.timePurchase||0) + 60; points = save.points; saveToStorage(); openShopOverlay();
     } else alert('Cannot buy more time (max total ' + (MAX_TIME_SECONDS/60) + ' minutes).');
-  } else alert('Not enough coins'); };
+  } else alert('Not enough points'); };
 
   shopOverlay.style.display = 'block';
   shopOverlay.setAttribute('aria-hidden','false');
@@ -814,7 +810,7 @@ function startRun(){
   generatedXEnd = 0; generatedXStart = 0;
   PLAYER.x = 500; PLAYER.y = canvas.height - 160; PLAYER.vy = 0; PLAYER.onGround = true;
   PLAYER.inventory = []; PLAYER.slot = 0;
-  points = 0;
+  points = save.points || 0;
   timerSeconds = START_TIME_SECONDS + (save.timePurchase||0);
   runActive = true; paused = false; lastEncounterTime = performance.now();
   save.runs = (save.runs||0);
@@ -829,6 +825,7 @@ function endRun(){
   runActive = false;
   if(timerTickInterval) clearInterval(timerTickInterval);
   save.runs = (save.runs||0) + 1;
+  save.points = points;
   saveToStorage();
   openShopOverlay();
 }
@@ -839,7 +836,11 @@ function spawnCyclopsNear(xMin, xMax){
 }
 
 function exportSave(){ const data = JSON.stringify(save, null, 2); const blob = new Blob([data], {type:'application/json'}); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'chronorun_save.json'; a.click(); URL.revokeObjectURL(url); }
-function importSave(){ const input = document.createElement('input'); input.type='file'; input.accept='application/json'; input.onchange = e => { const f = e.target.files[0]; if(!f) return; const r = new FileReader(); r.onload = ev => { try{ save = JSON.parse(ev.target.result); saveToStorage(); alert('Save imported'); } catch(err){ alert('Invalid file'); } }; r.readAsText(f); }; input.click(); }
+function importSave(){ const input = document.createElement('input'); input.type='file'; input.accept='application/json'; input.onchange = e => { const f = e.target.files[0]; if(!f) return; const r = new FileReader(); r.onload = ev => { try{ save = JSON.parse(ev.target.result); // ensure migration/defaults
+    if(save.points === undefined && save.permMoney !== undefined) save.points = save.permMoney;
+    save.permWeapons = save.permWeapons || []; save.unlockedDungeonWeapons = save.unlockedDungeonWeapons || []; save.permSpeed = save.permSpeed||0;
+    save.timePenaltyReduction = save.timePenaltyReduction||0; save.timePurchase = save.timePurchase||0; save.runs = save.runs||0;
+    points = save.points || 0; saveToStorage(); alert('Save imported'); } catch(err){ alert('Invalid file'); } }; r.readAsText(f); }; input.click(); }
 
 // ---------- HUD ----------
 const hudDiv = document.getElementById('hud');
@@ -850,7 +851,7 @@ function updateHUD(){
   while(invNames.length < 3) invNames.push('—');
   const current = PLAYER.inventory[PLAYER.slot] ? PLAYER.inventory[PLAYER.slot].name : (PLAYER.equipped || 'Stick');
   hudDiv.textContent =
-    `Pts: ${Math.floor(points)}  Coins: ${save.permMoney}\n` +
+    `Pts: ${Math.floor(points)}\n` +
     `Dist: ${dist} px\n` +
     `Time: ${fmtTime(remaining)}\n` +
     `Equipped: ${current}\n` +
@@ -866,12 +867,11 @@ function init(){
 }
 init();
 
-// expose
+// expose debugging helpers
 window._exportSave = exportSave;
 window._importSave = importSave;
 window._save = save;
 window._spawnCyclopsNear = spawnCyclopsNear;
-
 </script>
 </body>
 </html>
