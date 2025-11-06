@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>ChronoRun — Scorpion & Cyclops — Permanent Unlocks (session)</title>
+<title>ChronoRun — Scorpion & Cyclops — Melee Hitbox + Strong Melee</title>
 <style>
   :root{--bg:#0b1420;--panel:#081827cc;--accent:#7dd3fc}
   html,body{height:100%;margin:0;background:var(--bg);font-family:system-ui,Segoe UI,Roboto,Arial;color:#e6eef6}
@@ -39,11 +39,12 @@
 </div>
 
 <script>
-/* ChronoRun — Full single-file (cleaned)
-   - Points are canonical currency (in-session only; reset on page reload).
-   - Buying an item in the shop unlocks it permanently for the session and auto-equips it at run start.
-   - No save to localStorage — all progression lives in memory and resets on reload.
-   - Visuals/sprites unchanged.
+/* ChronoRun — Full single-file
+   - Melee weapons much stronger (approx. ~1/3 Cyclops HP per hit for swords).
+   - Temporary hitbox rectangle (200 ms) shows melee range when attacking.
+   - Attack with Left Click or '.' (period) key.
+   - Session-only progression (resets on reload). Shop purchases are permanent for session and auto-equip.
+   - Graphics/sprite filenames unchanged.
 */
 
 // ---------- CANVAS ----------
@@ -68,7 +69,7 @@ const CYCL_LOCK_MS = 450;
 const CYCL_COOLDOWN_MS = 2200;
 const SCALE = 1.35;
 
-// ---------- IN-MEMORY "SAVE" (resets on reload) ----------
+// ---------- IN-MEMORY SAVE (resets on reload) ----------
 let save = {
   permWeapons: [],              // permanently unlocked weapons this session
   unlockedDungeonWeapons: [],  // discovered weapons this session
@@ -79,9 +80,8 @@ let save = {
   timePurchase: 0,
   timePenaltyReduction: 0
 };
-// No localStorage calls — everything lives in `save` until page reload.
 
-// ---------- SPRITES (filenames unchanged) ----------
+// ---------- SPRITES ----------
 const SPRITE_FILES = {
   idleright: 'idleright.png', idleleft:'idleleft.png',
   jumpwalk1:'jumpwalk1.png', jumpwalk1left:'jumpwalk1left.png',
@@ -109,12 +109,15 @@ let projectiles = [];
 let items = [];
 let chunks = [];
 
-let points = save.points || 0;   // in-session points
+let points = save.points || 0;
 let timerSeconds = START_TIME_SECONDS + (save.timePurchase||0);
 let runActive = false;
 let paused = false;
 let lastEncounterTime = performance.now();
 let frameCount = 0;
+
+// Hitbox visual (shown briefly when melee attack happens)
+let lastMeleeHitbox = null; // {x, y, w, h, expiresAt}
 
 // ---------- PLAYER ----------
 const PLAYER = {
@@ -129,7 +132,9 @@ const keys = {};
 addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
   keys[k] = true;
-  if([' ','arrowup','arrowdown','arrowleft','arrowright','w','a','s','d'].includes(k)) e.preventDefault();
+  if([' ','arrowup','arrowdown','arrowleft','arrowright','w','a','s','d','.'].includes(k)) e.preventDefault();
+  // allow '.' to trigger immediately (key hold will be handled by cooldown)
+  if(k === '.') playerAttack();
 });
 addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 
@@ -248,7 +253,6 @@ function addToInventory(item){
   PLAYER.inventory.push(item);
   if(PLAYER.inventory.length > 3) PLAYER.inventory.shift();
   if(item.type === 'weapon'){
-    // if it is permanently unlocked, ensure permWeapons updated
     if(!save.unlockedDungeonWeapons.includes(item.name)) save.unlockedDungeonWeapons.push(item.name);
   }
 }
@@ -258,13 +262,15 @@ function awardPoints(n){
   save.points = points;
 }
 
-// ---------- WEAPONS ----------
+// ---------- WEAPONS (MELEE TUNED STRONGER) ----------
 const WEAPONS = {
-  'Stick': {dmg:4, range:36, cd:12, projectile:false},
-  'Wooden Sword': {dmg:9, range:48, cd:14, projectile:false},
-  'Iron Sword': {dmg:14, range:56, cd:18, projectile:false},
-  'Ice Dagger': {dmg:8, range:38, cd:10, projectile:false},
-  'Great Axe': {dmg:22, range:48, cd:32, projectile:false},
+  // Melee: tuned strong (around 1/3 Cyclops HP for swords)
+  'Stick': {dmg:8, range:36, cd:12, projectile:false},
+  'Wooden Sword': {dmg:30, range:64, cd:18, projectile:false}, // ~1/3 cyclops (90)
+  'Iron Sword': {dmg:36, range:74, cd:18, projectile:false},
+  'Ice Dagger': {dmg:26, range:40, cd:10, projectile:false},
+  'Great Axe': {dmg:48, range:56, cd:32, projectile:false},
+  // Ranged left similar-ish
   'Bow': {dmg:10, range:340, cd:22, projectile:true, speed:10},
   'Magic Wand': {dmg:12, range:360, cd:26, projectile:true, speed:9},
   'Fire Staff': {dmg:16, range:360, cd:30, projectile:true, speed:8},
@@ -272,6 +278,7 @@ const WEAPONS = {
 };
 let attackCooldown = 0;
 
+// Attack now triggers a visible hitbox for melee for 200ms
 function playerAttack(){
   const eq = PLAYER.inventory[PLAYER.slot] ? PLAYER.inventory[PLAYER.slot].name : (PLAYER.equipped || 'Stick');
   const w = WEAPONS[eq] || WEAPONS['Stick'];
@@ -281,23 +288,36 @@ function playerAttack(){
   if(w.projectile){
     projectiles.push({x: PLAYER.x + dir*36, y: PLAYER.y - 12, vx: dir * (w.speed || 10), vy: 0, dmg: w.dmg, life: w.range, owner:'player', type:'projectile'});
   } else {
-    const r = w.range;
-    const minX = PLAYER.x + (dir>0 ? 0 : -r);
-    const maxX = PLAYER.x + (dir>0 ? r : 0);
+    // melee: compute rectangular hitbox and apply damage to enemies/cyclops
+    const hx = PLAYER.x + (dir > 0 ? 0 : -w.range);
+    const hw = w.range;
+    const hy = PLAYER.y - PLAYER.h/2;
+    const hh = PLAYER.h;
+    // show hitbox for 200 ms
+    lastMeleeHitbox = {x: hx, y: hy, w: hw, h: hh, expiresAt: performance.now() + 200};
+    // apply damage to enemies overlapping the rectangle
     enemies.slice().forEach(e=>{
-      if(e.x >= minX && e.x <= maxX && Math.abs(e.y - PLAYER.y) < 60){
+      if(rectIntersect(hx, hy, hw, hh, e.x - e.w/2, e.y - e.h, e.w, e.h)){
         e.hp -= (w.dmg + rint(-2,2));
         if(e.hp <= 0) onEnemyKill(e);
         lastEncounterTime = performance.now();
       }
     });
     cyclopses.slice().forEach(c=>{
-      const d = Math.hypot(c.x - PLAYER.x, c.y - PLAYER.y);
-      if(d < r/10 + 60){ c.hp -= (w.dmg + rint(-2,2)); if(c.hp <= 0) onCyclopsKill(c); }
+      const cw = ENEMY_DEFS.Cyclops.w, ch = ENEMY_DEFS.Cyclops.h;
+      if(rectIntersect(hx, hy, hw, hh, c.x - cw/2, c.y - ch/2, cw, ch)){
+        c.hp -= (w.dmg + rint(-2,2));
+        if(c.hp <= 0) onCyclopsKill(c);
+        lastEncounterTime = performance.now();
+      }
     });
   }
 }
+function rectIntersect(x1,y1,w1,h1,x2,y2,w2,h2){
+  return !(x2 > x1 + w1 || x2 + w2 < x1 || y2 > y1 + h1 || y2 + h2 < y1);
+}
 
+// projectile updates
 function updateProjectiles(dt){
   projectiles.slice().forEach(p=>{
     p.x += (p.vx || 0) * (dt/16);
@@ -477,8 +497,8 @@ function update(dt){
   if(keys['a'] || keys['arrowleft']){ PLAYER.x -= PLAYER.speed * (1 + (save.permSpeed||0)) * (dt/16); PLAYER.facing='left'; moving = true; }
   if(keys['d'] || keys['arrowright']){ PLAYER.x += PLAYER.speed * (1 + (save.permSpeed||0)) * (dt/16); PLAYER.facing='right'; moving = true; }
 
-  // attack (z)
-  if(keys['z']){ playerAttack(); }
+  // period key handled on keydown; z also triggers? keep z as alternate
+  if(keys['z']) playerAttack();
 
   // inventory selection & drop
   if(keys['1']) PLAYER.slot = 0;
@@ -712,6 +732,18 @@ function draw(){
   if(img && img.complete) ctx.drawImage(img, screenX - PLAYER.w/2, screenY - PLAYER.h/2, PLAYER.w, PLAYER.h);
   else { ctx.fillStyle = '#7dd3fc'; ctx.fillRect(screenX - PLAYER.w/2, screenY - PLAYER.h/2, PLAYER.w, PLAYER.h); }
 
+  // draw melee hitbox (if active)
+  if(lastMeleeHitbox && performance.now() < lastMeleeHitbox.expiresAt){
+    ctx.save();
+    ctx.globalAlpha = 0.28;
+    ctx.fillStyle = '#ff4d4d';
+    const hx = lastMeleeHitbox.x - cameraX;
+    ctx.fillRect(hx, lastMeleeHitbox.y, lastMeleeHitbox.w, lastMeleeHitbox.h);
+    ctx.restore();
+  } else {
+    lastMeleeHitbox = null;
+  }
+
   updateHUD();
 }
 
@@ -734,7 +766,6 @@ function openShopOverlay(){
   } else {
     save.unlockedDungeonWeapons.forEach(w=>{
       const row = document.createElement('div'); row.className='shop-row';
-      // show if permanently purchased already
       const owned = save.permWeapons.includes(w);
       row.innerHTML = `<div>${w}${owned ? ' (owned)' : ''}</div><div><strong>150</strong> <button class="btn buyW" data-w="${w}" ${owned ? 'disabled' : ''}>Buy</button></div>`;
       shopContent.appendChild(row);
@@ -753,13 +784,9 @@ function openShopOverlay(){
   timeRow.innerHTML = `<div>Add time to runs (1 minute = 100 points). Current permanent time add: <strong>${Math.round((save.timePurchase||0)/60)}m</strong></div><div><strong>100</strong> <button id="buyTime" class="btn" ${((save.timePurchase||0) + 60 > MAX_TIME_SECONDS - START_TIME_SECONDS) ? 'disabled' : ''}>Buy 1m</button></div>`;
   shopContent.appendChild(timeRow);
 
-  // button logic (points currency), purchases are permanent for session
+  // button logic (points currency), purchases permanent for session & auto-equip
   shopContent.querySelectorAll('.buyW').forEach(b=>{
-    b.onclick = ()=>{ const name = b.dataset.w; if(points >= 150){ points -= 150; save.points = points; if(!save.permWeapons.includes(name)) save.permWeapons.push(name); save.equipped = name; PLAYER.equipped = name; // auto-equip permanently
-        // reflect UI
-        openShopOverlay();
-      } else alert('Not enough points');
-    };
+    b.onclick = ()=>{ const name = b.dataset.w; if(points >= 150){ points -= 150; save.points = points; if(!save.permWeapons.includes(name)) save.permWeapons.push(name); save.equipped = name; PLAYER.equipped = name; openShopOverlay(); } else alert('Not enough points'); };
   });
   document.getElementById('buySpeed').onclick = ()=>{ if(points >= 100){ points -= 100; save.points = points; save.permSpeed = (save.permSpeed||0)+0.5; openShopOverlay(); } else alert('Not enough points'); };
   document.getElementById('buyPenalty').onclick = ()=>{ if(points >= 120){ points -= 120; save.points = points; save.timePenaltyReduction = (save.timePenaltyReduction||0)+0.05; openShopOverlay(); } else alert('Not enough points'); };
@@ -780,9 +807,8 @@ function startRun(){
   PLAYER.x = 500; PLAYER.y = canvas.height - 160; PLAYER.vy = 0; PLAYER.onGround = true;
   PLAYER.inventory = []; PLAYER.slot = 0;
 
-  // Auto-equip best permanent weapon (if unlocked) else keep existing equipped
+  // Auto-equip last purchased permanent weapon if present
   if(save.permWeapons && save.permWeapons.length > 0){
-    // equip last purchased weapon
     PLAYER.equipped = save.equipped = save.permWeapons[save.permWeapons.length - 1];
   } else {
     PLAYER.equipped = save.equipped || 'Stick';
@@ -836,7 +862,7 @@ function init(){
 }
 init();
 
-// expose debugging helpers (no persistence across reload)
+// Expose debug helpers (session-only)
 window._save = save;
 window._spawnCyclopsNear = spawnCyclopsNear;
 </script>
