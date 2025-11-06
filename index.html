@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>ChronoRun — Scorpion & Cyclops (HP + Weapons) — Cleaned Full Build</title>
+<title>ChronoRun — Scorpion & Cyclops — Permanent Unlocks (session)</title>
 <style>
   :root{--bg:#0b1420;--panel:#081827cc;--accent:#7dd3fc}
   html,body{height:100%;margin:0;background:var(--bg);font-family:system-ui,Segoe UI,Roboto,Arial;color:#e6eef6}
@@ -39,15 +39,14 @@
 </div>
 
 <script>
-/* ChronoRun — Cleaned Full single-file game
-   - Preserves all sprite filenames and visuals.
-   - Points are now the primary, persistent currency (carried across runs).
-   - Shop buy buttons use points (instead of permMoney/coins).
-   - Backwards-compatible: if old saves had permMoney, they are migrated to points.
-   - Cleaned structure, improved save handling, small bug fixes.
+/* ChronoRun — Full single-file (cleaned)
+   - Points are canonical currency (in-session only; reset on page reload).
+   - Buying an item in the shop unlocks it permanently for the session and auto-equips it at run start.
+   - No save to localStorage — all progression lives in memory and resets on reload.
+   - Visuals/sprites unchanged.
 */
 
-// ---------- CANVAS SETUP ----------
+// ---------- CANVAS ----------
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 function resize(){ canvas.width = innerWidth; canvas.height = innerHeight; }
@@ -67,38 +66,22 @@ const PACE_MAX_SECONDS = 20;
 const CYCL_TRACK_MS = 1200;
 const CYCL_LOCK_MS = 450;
 const CYCL_COOLDOWN_MS = 2200;
-const SAVE_KEY = 'chronorun_full_save_v1';
 const SCALE = 1.35;
 
-// ---------- SAVE / STORAGE ----------
-let save = loadSave();
-function loadSave(){
-  try{
-    const raw = localStorage.getItem(SAVE_KEY);
-    if(raw){
-      const p = JSON.parse(raw);
-      // migrate older fields to new shape and ensure defaults
-      p.permWeapons = p.permWeapons || [];
-      p.unlockedDungeonWeapons = p.unlockedDungeonWeapons || [];
-      // points is canonical currency; if old permMoney present, migrate it
-      if(p.points === undefined && p.permMoney !== undefined) p.points = p.permMoney;
-      p.points = p.points || 0;
-      p.permSpeed = p.permSpeed || 0;
-      p.runs = p.runs || 0;
-      p.equipped = p.equipped || 'Stick';
-      p.timePurchase = p.timePurchase || 0;
-      p.timePenaltyReduction = p.timePenaltyReduction || 0;
-      return p;
-    }
-  }catch(e){ console.warn('load save fail', e); }
-  return {
-    permWeapons: [], unlockedDungeonWeapons: [], points:0, permSpeed:0, runs:0, equipped:'Stick',
-    timePurchase:0, timePenaltyReduction:0
-  };
-}
-function saveToStorage(){ localStorage.setItem(SAVE_KEY, JSON.stringify(save)); }
+// ---------- IN-MEMORY "SAVE" (resets on reload) ----------
+let save = {
+  permWeapons: [],              // permanently unlocked weapons this session
+  unlockedDungeonWeapons: [],  // discovered weapons this session
+  points: 0,                   // canonical currency (session)
+  permSpeed: 0,
+  runs: 0,
+  equipped: 'Stick',
+  timePurchase: 0,
+  timePenaltyReduction: 0
+};
+// No localStorage calls — everything lives in `save` until page reload.
 
-// ---------- SPRITES ----------
+// ---------- SPRITES (filenames unchanged) ----------
 const SPRITE_FILES = {
   idleright: 'idleright.png', idleleft:'idleleft.png',
   jumpwalk1:'jumpwalk1.png', jumpwalk1left:'jumpwalk1left.png',
@@ -126,7 +109,7 @@ let projectiles = [];
 let items = [];
 let chunks = [];
 
-let points = save.points || 0;           // persistent across runs (mirrors save.points)
+let points = save.points || 0;   // in-session points
 let timerSeconds = START_TIME_SECONDS + (save.timePurchase||0);
 let runActive = false;
 let paused = false;
@@ -151,9 +134,7 @@ addEventListener('keydown', e => {
 addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 
 canvas.addEventListener('mousedown', (ev) => {
-  if(ev.button === 0){ // left click
-    playerAttack();
-  }
+  if(ev.button === 0){ playerAttack(); }
 });
 
 // ---------- UTIL ----------
@@ -162,10 +143,9 @@ function rint(a,b){ return Math.floor(rand(a,b+1)); }
 function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
 function fmtTime(s){ const m=Math.floor(s/60); const sec=Math.floor(s%60); return `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`; }
 
-// ---------- TERRAIN STREAMING ----------
+// ---------- TERRAIN STREAM ----------
 let generatedXEnd = 0;
 let generatedXStart = 0;
-
 function ensureTerrainAroundCamera(){
   const center = PLAYER.x;
   const needRight = center + WORLD_BUFFER_AHEAD;
@@ -179,8 +159,6 @@ function ensureTerrainAroundCamera(){
     generateChunk(generatedXStart);
   }
 }
-
-// Generate chunk
 function generateChunk(startX){
   if(chunks.some(ch => ch.start === startX)) return;
   const segLen = CHUNK_SAMPLES;
@@ -211,13 +189,11 @@ function generateChunk(startX){
       const dx = px + rint(60, SAMPLE_W*3);
       dungeons.push({x: dx, y: y - 56, w: 80, h: 56, weapon: chooseDungeonWeapon(), opened:false});
     }
-    // spawn scorpions occasionally
     if(Math.random() < 0.04){
       const ex = px + rint(40, SAMPLE_W);
       const ey = y - 10;
       spawnEnemy('Scorpion', ex, ey);
     }
-    // cyclops spawn (increased chance overall; higher on mountains)
     if(Math.random() < 0.018 && biome === 'mountain'){
       const cx = px + rint(120, SAMPLE_W*6);
       const cy = y - rint(40,120);
@@ -232,12 +208,11 @@ function generateChunk(startX){
   terrain.sort((a,b)=>a.x-b.x);
 }
 
-// ---------- ENEMY DEFINITIONS ----------
+// ---------- ENEMIES ----------
 const ENEMY_DEFS = {
   Scorpion: {w: Math.round(34 * SCALE), h: Math.round(22 * SCALE), color:'#c38b3c', hp: 12, speed:2.4, timePenalty:7, reward:22},
   Cyclops:  {w: Math.round(92 * SCALE), h: Math.round(92 * SCALE), color:'#9a8f8f', hp: 90, speed:0.14, timePenalty:14, reward:360}
 };
-
 function chooseEnemyForBiome(b){ return 'Scorpion'; }
 function spawnEnemy(type, x, y){
   const def = ENEMY_DEFS[type] || ENEMY_DEFS.Scorpion;
@@ -247,8 +222,6 @@ function spawnEnemy(type, x, y){
     facing: (x > PLAYER.x) ? 'left' : 'right'
   });
 }
-
-// cyclops spawn
 function spawnCyclopsAt(x, y, inMountain=false){
   const def = ENEMY_DEFS.Cyclops;
   cyclopses.push({
@@ -268,23 +241,24 @@ function pickUpItemWorld(it){
     addToInventory({name: it.name, type:'weapon', fromDungeon:true});
     awardPoints(30);
   }
-  saveToStorage();
 }
 
 function addToInventory(item){
   if(!item) return;
   PLAYER.inventory.push(item);
   if(PLAYER.inventory.length > 3) PLAYER.inventory.shift();
-  if(!PLAYER.equipped && item.type === 'weapon') PLAYER.equipped = item.name;
+  if(item.type === 'weapon'){
+    // if it is permanently unlocked, ensure permWeapons updated
+    if(!save.unlockedDungeonWeapons.includes(item.name)) save.unlockedDungeonWeapons.push(item.name);
+  }
 }
 
 function awardPoints(n){
   points += n;
   save.points = points;
-  saveToStorage();
 }
 
-// ---------- WEAPONS & COMBAT ----------
+// ---------- WEAPONS ----------
 const WEAPONS = {
   'Stick': {dmg:4, range:36, cd:12, projectile:false},
   'Wooden Sword': {dmg:9, range:48, cd:14, projectile:false},
@@ -324,7 +298,6 @@ function playerAttack(){
   }
 }
 
-// projectile updates
 function updateProjectiles(dt){
   projectiles.slice().forEach(p=>{
     p.x += (p.vx || 0) * (dt/16);
@@ -358,21 +331,16 @@ function onEnemyKill(e){
   enemies = enemies.filter(x=>x!==e);
   const reward = e.reward || 30;
   awardPoints(Math.max(4, Math.floor(reward/2)));
-  points += Math.floor(reward/2); // duplicate small safety
-  // chance drops
   if(Math.random() < 0.14) items.push({type:'money', amount: rint(6,40), x: e.x, y: e.y});
   if(Math.random() < 0.06) items.push({type:'dungeon-weapon', name: chooseDungeonWeapon(), x: Math.floor(e.x), claimed:false});
   if(Math.random() < 0.25) timerSeconds = Math.min(timerSeconds + 1, START_TIME_SECONDS + (save.timePurchase||0));
   lastEncounterTime = performance.now();
-  save.points = points; saveToStorage();
 }
 function onCyclopsKill(c){
   cyclopses = cyclopses.filter(x=>x!==c);
   items.push({type:'dungeon-weapon', name:'Laser Wand', x: Math.floor(c.x), claimed:false});
-  awardPoints(80); // big reward
-  points += 240; // extra for scoreboard
+  awardPoints(80);
   lastEncounterTime = performance.now();
-  save.points = points; saveToStorage();
 }
 
 // ---------- HIT FROM ENEMY ----------
@@ -384,7 +352,7 @@ function enemyHitsPlayer(e){
   lastEncounterTime = performance.now();
 }
 
-// ---------- CYClops BEHAVIOR ----------
+// ---------- CYClops ----------
 function updateCyclopses(dt){
   const now = performance.now();
   cyclopses.slice().forEach(c=>{
@@ -499,7 +467,7 @@ function getBiomeAtX(x){
   return 'grass';
 }
 
-// ---------- GAME LOOP ----------
+// ---------- UPDATE ----------
 function update(dt){
   if(!runActive || paused) return;
   frameCount++;
@@ -585,7 +553,6 @@ function update(dt){
         awardPoints(30);
       }
       items = items.filter(x=>x!==it);
-      saveToStorage();
     }
   });
 
@@ -597,7 +564,6 @@ function update(dt){
       if(!save.unlockedDungeonWeapons.includes(itemName)) save.unlockedDungeonWeapons.push(itemName);
       addToInventory({name: itemName, type:'weapon', fromDungeon:true});
       awardPoints(80);
-      saveToStorage();
     }
   });
 
@@ -605,7 +571,7 @@ function update(dt){
   if(frameCount % 60 === 0) ensurePacing();
 }
 
-// ---------- RAF / TIMING ----------
+// ---------- RAF ----------
 let accMs = 0;
 let lastRAF = performance.now();
 function raf(now){
@@ -638,7 +604,7 @@ function draw(){
   ctx.fillStyle = '#6eaedb'; ctx.fillRect(0,0,canvas.width,canvas.height);
   ctx.fillStyle = '#0b2a3a'; ctx.fillRect(0, canvas.height - 300, canvas.width, 300);
 
-  // terrain strips
+  // terrain
   for(let i=0;i<terrain.length;i++){
     const t = terrain[i];
     const sx = t.x - cameraX;
@@ -667,7 +633,7 @@ function draw(){
     }
   });
 
-  // items (drops)
+  // items
   items.forEach(it=>{
     const sx = it.x - cameraX;
     if(sx < -200 || sx > canvas.width + 200) return;
@@ -675,7 +641,7 @@ function draw(){
     else if(it.type === 'dungeon-weapon'){ ctx.fillStyle = '#ffd86b'; ctx.fillRect(sx-8, (it.y||sampleTerrainY(it.x))-22, 16, 14); ctx.fillStyle='#000'; ctx.fillText('W', sx-2, (it.y||sampleTerrainY(it.x))-10); }
   });
 
-  // enemies (Scorpion)
+  // scorpions
   enemies.forEach(e=>{
     const sx = e.x - cameraX;
     if(sx < -300 || sx > canvas.width + 300) return;
@@ -687,7 +653,6 @@ function draw(){
       ctx.fillStyle = e.color || '#c38b3c';
       ctx.fillRect(sx - e.w/2, e.y - e.h, e.w, e.h);
     }
-    // HP bar
     ctx.fillStyle = '#000'; ctx.fillRect(sx - e.w/2, e.y - e.h - 8, e.w, 5);
     ctx.fillStyle = '#ff6b6b'; ctx.fillRect(sx - e.w/2, e.y - e.h - 8, e.w * clamp(e.hp / (e.maxHp || 16), 0, 1), 5);
   });
@@ -706,11 +671,9 @@ function draw(){
       ctx.fillStyle = '#9a8f8f'; ctx.fillRect(sx-22, sy-18, 44, 44);
       ctx.fillStyle = '#ffefef'; ctx.fillRect(sx-6, sy-8, 12, 12);
     }
-    // HP bar
     ctx.fillStyle = '#000'; ctx.fillRect(sx - cw/2, sy - ch/2 - 12, cw, 6);
     ctx.fillStyle = '#ff6b6b'; ctx.fillRect(sx - cw/2, sy - ch/2 - 12, cw * clamp(c.hp / (c.maxHp || ENEMY_DEFS.Cyclops.hp), 0, 1), 6);
 
-    // telegraph lines
     if(c.state === 'track' && c.target){ ctx.strokeStyle = 'rgba(255,120,120,0.95)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(PLAYER.x - cameraX, PLAYER.y - 8); ctx.stroke(); }
     else if(c.state === 'lock' && c.target){ ctx.strokeStyle = 'rgba(255,40,40,1)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(c.target.x - cameraX, c.target.y - 8); ctx.stroke(); }
     else if(c.lastFired && performance.now() - c.lastFired < 400){
@@ -752,7 +715,7 @@ function draw(){
   updateHUD();
 }
 
-// ---------- ANIMATION TIMER ----------
+// ---------- ANIMATION ----------
 setInterval(()=>{ if(!runActive || paused) return; PLAYER.animTimer++; if(PLAYER.animTimer>10){ PLAYER.animFrame=(PLAYER.animFrame+1); PLAYER.animTimer=0; } }, 1000/12);
 
 // ---------- SHOP UI ----------
@@ -771,32 +734,38 @@ function openShopOverlay(){
   } else {
     save.unlockedDungeonWeapons.forEach(w=>{
       const row = document.createElement('div'); row.className='shop-row';
-      row.innerHTML = `<div>${w}</div><div><strong>150</strong> <button class="btn buyW" data-w="${w}">Buy</button></div>`;
+      // show if permanently purchased already
+      const owned = save.permWeapons.includes(w);
+      row.innerHTML = `<div>${w}${owned ? ' (owned)' : ''}</div><div><strong>150</strong> <button class="btn buyW" data-w="${w}" ${owned ? 'disabled' : ''}>Buy</button></div>`;
       shopContent.appendChild(row);
     });
   }
 
   const upTitle = document.createElement('div'); upTitle.style.marginTop='8px'; upTitle.innerHTML = '<strong>Permanent Upgrades & Time</strong>'; shopContent.appendChild(upTitle);
   const spd = document.createElement('div'); spd.className='shop-row';
-  spd.innerHTML = `<div>+0.5 Speed</div><div><strong>100</strong> <button id="buySpeed" class="btn">Buy</button></div>`;
+  spd.innerHTML = `<div>+0.5 Speed ${save.permSpeed>0 ? ` (x${1 + save.permSpeed/0.5})` : ''}</div><div><strong>100</strong> <button id="buySpeed" class="btn" ${save.permSpeed>=3 ? 'disabled' : ''}>Buy</button></div>`;
   shopContent.appendChild(spd);
   const pen = document.createElement('div'); pen.className='shop-row';
-  pen.innerHTML = `<div>Reduce hit penalty (5%)</div><div><strong>120</strong> <button id="buyPenalty" class="btn">Buy</button></div>`;
+  pen.innerHTML = `<div>Reduce hit penalty (5%) ${save.timePenaltyReduction>0 ? `(+${Math.round(save.timePenaltyReduction*100)}%)` : ''}</div><div><strong>120</strong> <button id="buyPenalty" class="btn" ${save.timePenaltyReduction>=0.25 ? 'disabled' : ''}>Buy</button></div>`;
   shopContent.appendChild(pen);
 
   const timeRow = document.createElement('div'); timeRow.className='shop-row';
-  timeRow.innerHTML = `<div>Add time to runs (1 minute = 100 points). Current permanent time add: <strong>${Math.round((save.timePurchase||0)/60)}m</strong></div><div><strong>100</strong> <button id="buyTime" class="btn">Buy 1m</button></div>`;
+  timeRow.innerHTML = `<div>Add time to runs (1 minute = 100 points). Current permanent time add: <strong>${Math.round((save.timePurchase||0)/60)}m</strong></div><div><strong>100</strong> <button id="buyTime" class="btn" ${((save.timePurchase||0) + 60 > MAX_TIME_SECONDS - START_TIME_SECONDS) ? 'disabled' : ''}>Buy 1m</button></div>`;
   shopContent.appendChild(timeRow);
 
-  // hook up button logic (use points currency)
+  // button logic (points currency), purchases are permanent for session
   shopContent.querySelectorAll('.buyW').forEach(b=>{
-    b.onclick = ()=>{ const name = b.dataset.w; if(save.points >= 150){ save.points -= 150; save.points = Math.max(0, save.points); if(!save.permWeapons.includes(name)) save.permWeapons.push(name); save.equipped = name; points = save.points; saveToStorage(); openShopOverlay(); } else alert('Not enough points'); };
+    b.onclick = ()=>{ const name = b.dataset.w; if(points >= 150){ points -= 150; save.points = points; if(!save.permWeapons.includes(name)) save.permWeapons.push(name); save.equipped = name; PLAYER.equipped = name; // auto-equip permanently
+        // reflect UI
+        openShopOverlay();
+      } else alert('Not enough points');
+    };
   });
-  document.getElementById('buySpeed').onclick = ()=>{ if(save.points >= 100){ save.points -= 100; save.permSpeed = (save.permSpeed||0)+0.5; points = save.points; saveToStorage(); openShopOverlay(); } else alert('Not enough points'); };
-  document.getElementById('buyPenalty').onclick = ()=>{ if(save.points >= 120){ save.points -= 120; save.timePenaltyReduction = (save.timePenaltyReduction||0)+0.05; points = save.points; saveToStorage(); openShopOverlay(); } else alert('Not enough points'); };
-  document.getElementById('buyTime').onclick = ()=>{ if(save.points >= 100){
+  document.getElementById('buySpeed').onclick = ()=>{ if(points >= 100){ points -= 100; save.points = points; save.permSpeed = (save.permSpeed||0)+0.5; openShopOverlay(); } else alert('Not enough points'); };
+  document.getElementById('buyPenalty').onclick = ()=>{ if(points >= 120){ points -= 120; save.points = points; save.timePenaltyReduction = (save.timePenaltyReduction||0)+0.05; openShopOverlay(); } else alert('Not enough points'); };
+  document.getElementById('buyTime').onclick = ()=>{ if(points >= 100){
     if((save.timePurchase||0) + 60 <= MAX_TIME_SECONDS - START_TIME_SECONDS){
-      save.points -= 100; save.timePurchase = (save.timePurchase||0) + 60; points = save.points; saveToStorage(); openShopOverlay();
+      points -= 100; save.points = points; save.timePurchase = (save.timePurchase||0) + 60; openShopOverlay();
     } else alert('Cannot buy more time (max total ' + (MAX_TIME_SECONDS/60) + ' minutes).');
   } else alert('Not enough points'); };
 
@@ -810,11 +779,19 @@ function startRun(){
   generatedXEnd = 0; generatedXStart = 0;
   PLAYER.x = 500; PLAYER.y = canvas.height - 160; PLAYER.vy = 0; PLAYER.onGround = true;
   PLAYER.inventory = []; PLAYER.slot = 0;
+
+  // Auto-equip best permanent weapon (if unlocked) else keep existing equipped
+  if(save.permWeapons && save.permWeapons.length > 0){
+    // equip last purchased weapon
+    PLAYER.equipped = save.equipped = save.permWeapons[save.permWeapons.length - 1];
+  } else {
+    PLAYER.equipped = save.equipped || 'Stick';
+  }
+
   points = save.points || 0;
   timerSeconds = START_TIME_SECONDS + (save.timePurchase||0);
   runActive = true; paused = false; lastEncounterTime = performance.now();
   save.runs = (save.runs||0);
-  saveToStorage();
   ensureTerrainAroundCamera();
   startTimerTick();
   lastRAF = performance.now();
@@ -826,7 +803,6 @@ function endRun(){
   if(timerTickInterval) clearInterval(timerTickInterval);
   save.runs = (save.runs||0) + 1;
   save.points = points;
-  saveToStorage();
   openShopOverlay();
 }
 
@@ -834,13 +810,6 @@ function endRun(){
 function spawnCyclopsNear(xMin, xMax){
   spawnCyclopsAt(PLAYER.x + rint(xMin, xMax), sampleTerrainY(PLAYER.x + rint(xMin, xMax)) - 60, false);
 }
-
-function exportSave(){ const data = JSON.stringify(save, null, 2); const blob = new Blob([data], {type:'application/json'}); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'chronorun_save.json'; a.click(); URL.revokeObjectURL(url); }
-function importSave(){ const input = document.createElement('input'); input.type='file'; input.accept='application/json'; input.onchange = e => { const f = e.target.files[0]; if(!f) return; const r = new FileReader(); r.onload = ev => { try{ save = JSON.parse(ev.target.result); // ensure migration/defaults
-    if(save.points === undefined && save.permMoney !== undefined) save.points = save.permMoney;
-    save.permWeapons = save.permWeapons || []; save.unlockedDungeonWeapons = save.unlockedDungeonWeapons || []; save.permSpeed = save.permSpeed||0;
-    save.timePenaltyReduction = save.timePenaltyReduction||0; save.timePurchase = save.timePurchase||0; save.runs = save.runs||0;
-    points = save.points || 0; saveToStorage(); alert('Save imported'); } catch(err){ alert('Invalid file'); } }; r.readAsText(f); }; input.click(); }
 
 // ---------- HUD ----------
 const hudDiv = document.getElementById('hud');
@@ -867,9 +836,7 @@ function init(){
 }
 init();
 
-// expose debugging helpers
-window._exportSave = exportSave;
-window._importSave = importSave;
+// expose debugging helpers (no persistence across reload)
 window._save = save;
 window._spawnCyclopsNear = spawnCyclopsNear;
 </script>
